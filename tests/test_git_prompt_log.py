@@ -1392,8 +1392,8 @@ class TestIngestionAdapters(unittest.TestCase):
         res = subprocess.run(["python3", script_path, "harness"], cwd=repo_dir, capture_output=True, text=True, check=True)
         self.assertIn("Configured Harness: claude", res.stdout)
 
-        # Verify git config was set
-        conf = subprocess.check_output(["git", "config", "prompt-log.adapter"], cwd=repo_dir, text=True).strip()
+        # Verify git config prompt-log.harness was set
+        conf = subprocess.check_output(["git", "config", "prompt-log.harness"], cwd=repo_dir, text=True).strip()
         self.assertEqual(conf, "claude")
 
         # 3. adapters --json shows configured
@@ -1407,20 +1407,31 @@ class TestIngestionAdapters(unittest.TestCase):
         res = subprocess.run(["python3", script_path, "harness"], cwd=repo_dir, capture_output=True, text=True, check=True)
         self.assertIn("Configured Harness: None", res.stdout)
 
-    def test_init_with_adapter_flag(self):
+        # 5. Backward compatibility with legacy prompt-log.adapter config
+        subprocess.run(["git", "config", "prompt-log.adapter", "manual"], cwd=repo_dir, check=True)
+        self.assertEqual(gpn.get_configured_harness(repo_dir), "manual")
+        subprocess.run(["git", "config", "--unset", "prompt-log.adapter"], cwd=repo_dir, check=True)
+
+        # 6. Environment variable override via PROMPT_LOG_HARNESS
+        test_env = os.environ.copy()
+        test_env["PROMPT_LOG_HARNESS"] = "antigravity"
+        res = subprocess.run(["python3", script_path, "harness"], cwd=repo_dir, env=test_env, capture_output=True, text=True, check=True)
+        self.assertIn("Configured Harness: antigravity", res.stdout)
+
+    def test_init_with_harness_flag(self):
         repo_dir = self.work_dir / "repo_init_adapter"
         repo_dir.mkdir()
         subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
         script_path = str(bin_path)
 
-        # Run init with --adapter antigravity
-        subprocess.run(["python3", script_path, "init", "--adapter", "antigravity"], cwd=repo_dir, check=True, capture_output=True)
-        conf = subprocess.check_output(["git", "config", "prompt-log.adapter"], cwd=repo_dir, text=True).strip()
+        # Run init with --harness antigravity
+        subprocess.run(["python3", script_path, "init", "--harness", "antigravity"], cwd=repo_dir, check=True, capture_output=True)
+        conf = subprocess.check_output(["git", "config", "prompt-log.harness"], cwd=repo_dir, text=True).strip()
         self.assertEqual(conf, "antigravity")
 
         # Verify uninstall-hook --all clears it
         subprocess.run(["python3", script_path, "uninstall-hook", "--all"], cwd=repo_dir, check=True, capture_output=True)
-        res = subprocess.run(["git", "config", "prompt-log.adapter"], cwd=repo_dir, capture_output=True)
+        res = subprocess.run(["git", "config", "prompt-log.harness"], cwd=repo_dir, capture_output=True)
         self.assertNotEqual(res.returncode, 0)
 
 

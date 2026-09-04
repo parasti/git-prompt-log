@@ -97,7 +97,7 @@ git prompt-log record -m "System architecture design" --harness "Human Dev" --mo
 # Explicitly set the active harness for this repository (or --global)
 git prompt-log harness antigravity
 # or via standard git config:
-git config prompt-log.adapter antigravity
+git config prompt-log.harness antigravity
 
 # Inspect registered adapters, configured harness, and active detection
 git prompt-log adapters

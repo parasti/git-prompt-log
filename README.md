@@ -212,13 +212,18 @@ You can explicitly specify which assistant harness to use for this repository or
 # Set default harness for current repository
 git prompt-log harness antigravity
 # or via standard git config:
-git config prompt-log.adapter antigravity
+git config prompt-log.harness antigravity
 
 # Or configure globally across all repositories
 git prompt-log harness --global antigravity
+# or:
+git config --global prompt-log.harness antigravity
 
 # Initialize a repository with an explicit default harness
-git prompt-log init --adapter antigravity
+git prompt-log init --harness antigravity
+
+# Or override via environment variable
+export PROMPT_LOG_HARNESS=antigravity
 
 # View current configuration and detected session
 git prompt-log harness

@@ -1130,17 +1130,27 @@ class ManualAdapter(BaseIngestionAdapter):
 DirectAdapter = ManualAdapter
 
 
-def get_configured_adapter(repo_root: Optional[Path] = None) -> Optional[str]:
-    """Returns the explicitly configured adapter name from env or git config, if any."""
-    env_val = os.environ.get("PROMPT_LOG_ADAPTER") or os.environ.get("GIT_PROMPT_LOG_ADAPTER")
+def get_configured_harness(repo_root: Optional[Path] = None) -> Optional[str]:
+    """Returns the explicitly configured harness/adapter name from env or git config, if any."""
+    env_val = (
+        os.environ.get("PROMPT_LOG_HARNESS")
+        or os.environ.get("GIT_PROMPT_LOG_HARNESS")
+        or os.environ.get("PROMPT_LOG_ADAPTER")
+        or os.environ.get("GIT_PROMPT_LOG_ADAPTER")
+    )
     if env_val:
         v = env_val.strip().lower()
         return "manual" if v == "direct" else v
-    code, out, _ = run_git(["config", "prompt-log.adapter"], repo_root=repo_root)
-    if code == 0 and out.strip():
-        v = out.strip().lower()
-        return "manual" if v == "direct" else v
+    for key in ("prompt-log.harness", "prompt-log.adapter"):
+        code, out, _ = run_git(["config", key], repo_root=repo_root)
+        if code == 0 and out.strip():
+            v = out.strip().lower()
+            return "manual" if v == "direct" else v
     return None
+
+
+# Backward compatibility alias
+get_configured_adapter = get_configured_harness
 
 
 class AdapterRegistry:
@@ -1344,7 +1354,7 @@ def cmd_adapters(args: argparse.Namespace) -> int:
         return 0
 
     if configured:
-        print(f"Configured Harness: {configured} (git config prompt-log.adapter)\n")
+        print(f"Configured Harness: {configured} (git config prompt-log.harness)\n")
     else:
         print("Configured Harness: None (auto-detect)\n")
 
@@ -1373,25 +1383,26 @@ def cmd_harness(args: argparse.Namespace) -> int:
     global_flag = ["--global"] if getattr(args, "global_config", False) else []
 
     if name in ("clear", "none", "auto"):
-        run_git(["config"] + global_flag + ["--unset", "prompt-log.adapter"], repo_root=repo_root)
+        for k in ("prompt-log.harness", "prompt-log.adapter"):
+            run_git(["config"] + global_flag + ["--unset", k], repo_root=repo_root)
         scope = "globally" if global_flag else "for repository"
         print(f"Cleared configured harness ({scope}). Automatic detection restored.")
         return 0
 
     if name:
         target = "manual" if name == "direct" else name
-        code, _, err = run_git(["config"] + global_flag + ["prompt-log.adapter", target], repo_root=repo_root)
+        code, _, err = run_git(["config"] + global_flag + ["prompt-log.harness", target], repo_root=repo_root)
         if code != 0:
             sys.stderr.write(f"Error setting git config: {err}\n")
             return 1
         scope = "globally" if global_flag else "for repository"
-        print(f"Set active harness to '{target}' ({scope}, saved to git config prompt-log.adapter).")
+        print(f"Set active harness to '{target}' ({scope}, saved to git config prompt-log.harness).")
         return 0
 
-    configured = get_configured_adapter(repo_root=repo_root)
+    configured = get_configured_harness(repo_root=repo_root)
     active = REGISTRY.detect_active_adapter(repo_root=repo_root)
     if configured:
-        print(f"Configured Harness: {configured} (git config prompt-log.adapter)")
+        print(f"Configured Harness: {configured} (git config prompt-log.harness)")
     else:
         print("Configured Harness: None (auto-detect)")
 
@@ -2507,11 +2518,11 @@ def cmd_install_hook(args: argparse.Namespace) -> int:
     print(f"Git configured: notes.rewriteRef = {args.ref}")
 
     # 4. Explicitly configure default assistant harness / adapter if requested
-    adapter_arg = getattr(args, "adapter", None)
-    if adapter_arg and adapter_arg != "auto":
-        target = "manual" if adapter_arg == "direct" else adapter_arg
-        run_git(["config", "prompt-log.adapter", target], repo_root=repo_root)
-        print(f"Git configured: prompt-log.adapter = {target}")
+    harness_arg = getattr(args, "harness", None) or getattr(args, "adapter", None)
+    if harness_arg and harness_arg != "auto":
+        target = "manual" if harness_arg == "direct" else harness_arg
+        run_git(["config", "prompt-log.harness", target], repo_root=repo_root)
+        print(f"Git configured: prompt-log.harness = {target}")
 
     # 5. If called via 'init' and with_skill is true, install local repository skill
     if getattr(args, "with_skill", False):
@@ -2598,9 +2609,9 @@ def cmd_uninstall_hook(args: argparse.Namespace) -> int:
     if getattr(args, "all", False) or getattr(args, "with_config", False):
         for key in ("notes.rewrite.rebase", "notes.rewrite.amend", "notes.rewriteRef"):
             run_git(["config", "--unset", key], repo_root=repo_root)
-        for key in ("prompt-log.exclude", "prompt-note.exclude", "prompt-log.adapter"):
+        for key in ("prompt-log.exclude", "prompt-note.exclude", "prompt-log.harness", "prompt-log.adapter"):
             run_git(["config", "--unset-all", key], repo_root=repo_root)
-        print("Cleaned local git config (notes.rewrite*, prompt-log.exclude, prompt-log.adapter)")
+        print("Cleaned local git config (notes.rewrite*, prompt-log.exclude, prompt-log.harness, prompt-log.adapter)")
 
     if getattr(args, "all", False) or getattr(args, "with_skill", False):
         for folder_name in ("git-prompt-log", "git-prompt-note", "agy-prompt-note"):
@@ -2682,11 +2693,12 @@ def main():
         help="Do not install local repository assistant skill (default)",
     )
     p_init.add_argument(
+        "--harness",
         "--adapter",
         "-a",
         choices=["antigravity", "claude", "manual", "auto"],
         default=None,
-        help="Explicitly configure default assistant harness / adapter",
+        help="Explicitly configure default assistant harness",
     )
     p_init.add_argument(
         "--no-post-commit",
@@ -2791,11 +2803,12 @@ def main():
         help="Do not install local repository assistant skill (default)",
     )
     p_install.add_argument(
+        "--harness",
         "--adapter",
         "-a",
         choices=["antigravity", "claude", "manual", "auto"],
         default=None,
-        help="Explicitly configure default assistant harness / adapter",
+        help="Explicitly configure default assistant harness",
     )
     p_install.add_argument(
         "--no-post-commit",
