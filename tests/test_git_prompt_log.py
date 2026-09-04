@@ -1407,12 +1407,7 @@ class TestIngestionAdapters(unittest.TestCase):
         res = subprocess.run(["python3", script_path, "harness"], cwd=repo_dir, capture_output=True, text=True, check=True)
         self.assertIn("Configured Harness: None", res.stdout)
 
-        # 5. Backward compatibility with legacy prompt-log.adapter config
-        subprocess.run(["git", "config", "prompt-log.adapter", "manual"], cwd=repo_dir, check=True)
-        self.assertEqual(gpn.get_configured_harness(repo_dir), "manual")
-        subprocess.run(["git", "config", "--unset", "prompt-log.adapter"], cwd=repo_dir, check=True)
-
-        # 6. Environment variable override via PROMPT_LOG_HARNESS
+        # 5. Environment variable override via PROMPT_LOG_HARNESS
         test_env = os.environ.copy()
         test_env["PROMPT_LOG_HARNESS"] = "antigravity"
         res = subprocess.run(["python3", script_path, "harness"], cwd=repo_dir, env=test_env, capture_output=True, text=True, check=True)

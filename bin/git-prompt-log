@@ -1131,25 +1131,18 @@ DirectAdapter = ManualAdapter
 
 
 def get_configured_harness(repo_root: Optional[Path] = None) -> Optional[str]:
-    """Returns the explicitly configured harness/adapter name from env or git config, if any."""
-    env_val = (
-        os.environ.get("PROMPT_LOG_HARNESS")
-        or os.environ.get("GIT_PROMPT_LOG_HARNESS")
-        or os.environ.get("PROMPT_LOG_ADAPTER")
-        or os.environ.get("GIT_PROMPT_LOG_ADAPTER")
-    )
+    """Returns the explicitly configured harness name from env or git config, if any."""
+    env_val = os.environ.get("PROMPT_LOG_HARNESS") or os.environ.get("GIT_PROMPT_LOG_HARNESS")
     if env_val:
         v = env_val.strip().lower()
         return "manual" if v == "direct" else v
-    for key in ("prompt-log.harness", "prompt-log.adapter"):
-        code, out, _ = run_git(["config", key], repo_root=repo_root)
-        if code == 0 and out.strip():
-            v = out.strip().lower()
-            return "manual" if v == "direct" else v
+    code, out, _ = run_git(["config", "prompt-log.harness"], repo_root=repo_root)
+    if code == 0 and out.strip():
+        v = out.strip().lower()
+        return "manual" if v == "direct" else v
     return None
 
 
-# Backward compatibility alias
 get_configured_adapter = get_configured_harness
 
 
@@ -1181,8 +1174,8 @@ class AdapterRegistry:
         if preferred_name and preferred_name != "auto":
             return self.get(preferred_name)
 
-        # 1. Check explicit user configuration (git config or PROMPT_LOG_ADAPTER env)
-        configured = get_configured_adapter(repo_root=repo_root)
+        # 1. Check explicit user configuration (git config prompt-log.harness or PROMPT_LOG_HARNESS env)
+        configured = get_configured_harness(repo_root=repo_root)
         if configured and configured != "auto":
             adapter = self.get(configured)
             if adapter:
@@ -1332,7 +1325,7 @@ def find_session_transcript(
 def cmd_adapters(args: argparse.Namespace) -> int:
     """Displays registered and active AI assistant ingestion adapters."""
     repo_root = get_repo_root()
-    configured = get_configured_adapter(repo_root=repo_root)
+    configured = get_configured_harness(repo_root=repo_root)
     active = REGISTRY.detect_active_adapter(repo_root=repo_root)
     adapters = REGISTRY.list_adapters()
 
@@ -1383,8 +1376,7 @@ def cmd_harness(args: argparse.Namespace) -> int:
     global_flag = ["--global"] if getattr(args, "global_config", False) else []
 
     if name in ("clear", "none", "auto"):
-        for k in ("prompt-log.harness", "prompt-log.adapter"):
-            run_git(["config"] + global_flag + ["--unset", k], repo_root=repo_root)
+        run_git(["config"] + global_flag + ["--unset", "prompt-log.harness"], repo_root=repo_root)
         scope = "globally" if global_flag else "for repository"
         print(f"Cleared configured harness ({scope}). Automatic detection restored.")
         return 0
@@ -2609,9 +2601,9 @@ def cmd_uninstall_hook(args: argparse.Namespace) -> int:
     if getattr(args, "all", False) or getattr(args, "with_config", False):
         for key in ("notes.rewrite.rebase", "notes.rewrite.amend", "notes.rewriteRef"):
             run_git(["config", "--unset", key], repo_root=repo_root)
-        for key in ("prompt-log.exclude", "prompt-note.exclude", "prompt-log.harness", "prompt-log.adapter"):
+        for key in ("prompt-log.exclude", "prompt-note.exclude", "prompt-log.harness"):
             run_git(["config", "--unset-all", key], repo_root=repo_root)
-        print("Cleaned local git config (notes.rewrite*, prompt-log.exclude, prompt-log.harness, prompt-log.adapter)")
+        print("Cleaned local git config (notes.rewrite*, prompt-log.exclude, prompt-log.harness)")
 
     if getattr(args, "all", False) or getattr(args, "with_skill", False):
         for folder_name in ("git-prompt-log", "git-prompt-note", "agy-prompt-note"):
