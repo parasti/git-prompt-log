@@ -1377,6 +1377,52 @@ class TestIngestionAdapters(unittest.TestCase):
         self.assertIn("Assistant-Model: claude-3-7-sonnet", note)
         self.assertIn("Refactor auth pipeline", note)
 
+    def test_harness_cli_and_git_config(self):
+        repo_dir = self.work_dir / "repo_harness"
+        repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+        script_path = str(bin_path)
+
+        # 1. Initially unconfigured
+        res = subprocess.run(["python3", script_path, "harness"], cwd=repo_dir, capture_output=True, text=True, check=True)
+        self.assertIn("Configured Harness: None", res.stdout)
+
+        # 2. Set harness via CLI
+        subprocess.run(["python3", script_path, "harness", "claude"], cwd=repo_dir, check=True, capture_output=True)
+        res = subprocess.run(["python3", script_path, "harness"], cwd=repo_dir, capture_output=True, text=True, check=True)
+        self.assertIn("Configured Harness: claude", res.stdout)
+
+        # Verify git config was set
+        conf = subprocess.check_output(["git", "config", "prompt-log.adapter"], cwd=repo_dir, text=True).strip()
+        self.assertEqual(conf, "claude")
+
+        # 3. adapters --json shows configured
+        res = subprocess.run(["python3", script_path, "adapters", "--json"], cwd=repo_dir, capture_output=True, text=True, check=True)
+        data = json.loads(res.stdout)
+        self.assertEqual(data["configured"], "claude")
+        self.assertEqual(data["active"], "claude")
+
+        # 4. Clear harness
+        subprocess.run(["python3", script_path, "harness", "clear"], cwd=repo_dir, check=True, capture_output=True)
+        res = subprocess.run(["python3", script_path, "harness"], cwd=repo_dir, capture_output=True, text=True, check=True)
+        self.assertIn("Configured Harness: None", res.stdout)
+
+    def test_init_with_adapter_flag(self):
+        repo_dir = self.work_dir / "repo_init_adapter"
+        repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+        script_path = str(bin_path)
+
+        # Run init with --adapter antigravity
+        subprocess.run(["python3", script_path, "init", "--adapter", "antigravity"], cwd=repo_dir, check=True, capture_output=True)
+        conf = subprocess.check_output(["git", "config", "prompt-log.adapter"], cwd=repo_dir, text=True).strip()
+        self.assertEqual(conf, "antigravity")
+
+        # Verify uninstall-hook --all clears it
+        subprocess.run(["python3", script_path, "uninstall-hook", "--all"], cwd=repo_dir, check=True, capture_output=True)
+        res = subprocess.run(["git", "config", "prompt-log.adapter"], cwd=repo_dir, capture_output=True)
+        self.assertNotEqual(res.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

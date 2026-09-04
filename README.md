@@ -204,9 +204,32 @@ Prompts can also be filtered or modified retroactively via the CLI:
 | `claude` | Claude Code | `$CLAUDE_SESSION_ID`, `~/.claude/projects/`, `$CLAUDE_TRANSCRIPT_PATH` |
 | `manual` | Manual Entry | `-m / --message "..."` or `--stdin` |
 
+### Configuring Your Assistant Harness
+
+You can explicitly specify which assistant harness to use for this repository or globally without relying on environment variables:
+
+```bash
+# Set default harness for current repository
+git prompt-log harness antigravity
+# or via standard git config:
+git config prompt-log.adapter antigravity
+
+# Or configure globally across all repositories
+git prompt-log harness --global antigravity
+
+# Initialize a repository with an explicit default harness
+git prompt-log init --adapter antigravity
+
+# View current configuration and detected session
+git prompt-log harness
+
+# Clear configuration to restore auto-detection
+git prompt-log harness clear
+```
+
 ### Inspecting Adapters
 
-Inspect registered adapters, detection status in your current shell, and active sessions:
+Inspect registered adapters, configured harness, and active session details:
 
 ```bash
 git prompt-log adapters

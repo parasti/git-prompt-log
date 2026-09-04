@@ -20,11 +20,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-try:
-    import fcntl
-except ImportError:
-    fcntl = None  # type: ignore
-
 
 DEFAULT_NOTES_REF = "refs/notes/commits"
 
@@ -688,97 +683,45 @@ class AntigravityAdapter(BaseIngestionAdapter):
     name = "antigravity"
     display_name = "Antigravity CLI"
 
-    def _get_ancestor_agy_pid(self) -> Optional[int]:
-        try:
-            pid = os.getppid()
-            for _ in range(10):
-                if pid <= 1:
-                    break
-                res = subprocess.run(
-                    ["ps", "-o", "ppid=,comm=", "-p", str(pid)],
-                    capture_output=True,
-                    text=True,
-                    timeout=0.5,
-                )
-                if res.returncode != 0:
-                    break
-                parts = res.stdout.strip().split(None, 1)
-                if len(parts) < 2:
-                    break
-                ppid_str, comm = parts
-                if Path(comm).name.lower() in ("agy", "antigravity"):
-                    return pid
-                pid = int(ppid_str)
-        except Exception:
-            pass
-        return None
-
-    def _session_matches_repo(self, session_id: str, repo_root: Optional[Path]) -> bool:
-        if not repo_root or not session_id:
-            return True
-        brain = get_brain_dir()
-        t_path = brain / session_id / ".system_generated" / "logs" / "transcript.jsonl"
-        if not t_path.exists():
-            return False
-        repo_strs = {str(repo_root).lower(), repo_root.name.lower()}
-        try:
-            with open(t_path, "r", encoding="utf-8", errors="replace") as f:
-                header = "".join([f.readline() for _ in range(25)]).lower()
-            return any(r in header for r in repo_strs)
-        except Exception:
-            return False
+    def is_active(self, repo_root: Optional[Path] = None) -> bool:
+        return bool(os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID"))
 
     def detect_session_id(self, repo_root: Optional[Path] = None) -> Optional[str]:
-        # 1. Explicit environment variables
+        # 1. Environment variable if available
         sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
         if sid:
             return sid
 
+        # 2. Latest active session in brain matching repository
+        brain = get_brain_dir()
+        if not brain.exists():
+            return None
+
         repo = repo_root or get_repo_root()
+        repo_strs = {str(repo).lower(), repo.name.lower()}
+        matching = []
 
-        # 2. Check if running as a child/descendant of an agy process
-        agy_pid = self._get_ancestor_agy_pid()
-        if agy_pid:
+        for cid_dir in brain.iterdir():
+            if not cid_dir.is_dir() or cid_dir.name.startswith("."):
+                continue
+            t_path = cid_dir / ".system_generated" / "logs" / "transcript.jsonl"
+            if not t_path.exists():
+                continue
+
             try:
-                res = subprocess.run(
-                    ["lsof", "-p", str(agy_pid), "-Fn"],
-                    capture_output=True,
-                    text=True,
-                    timeout=0.5,
-                )
-                m = re.search(r"presence/([a-zA-Z0-9_-]+)\.lock", res.stdout)
-                if m and self._session_matches_repo(m.group(1), repo):
-                    return m.group(1)
-                m_brain = re.search(r"brain/([a-zA-Z0-9_-]{8,})", res.stdout)
-                if m_brain and self._session_matches_repo(m_brain.group(1), repo):
-                    return m_brain.group(1)
+                mtime = t_path.stat().st_mtime
+                with open(t_path, "r", encoding="utf-8", errors="replace") as f:
+                    header = "".join([f.readline() for _ in range(25)]).lower()
+                if any(r in header for r in repo_strs):
+                    matching.append((mtime, cid_dir.name))
             except Exception:
-                pass
+                continue
 
-        # 3. Check presence/*.lock with active flock matching current repository
-        if fcntl is not None:
-            brain = get_brain_dir()
-            presence_dir = brain.parent / "presence"
-            if presence_dir.exists():
-                for lock_file in presence_dir.glob("*.lock"):
-                    candidate_sid = lock_file.stem
-                    try:
-                        with open(lock_file, "r") as f:
-                            try:
-                                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                                fcntl.flock(f, fcntl.LOCK_UN)
-                            except (BlockingIOError, OSError):
-                                if self._session_matches_repo(candidate_sid, repo):
-                                    return candidate_sid
-                    except Exception:
-                        pass
+        if matching:
+            matching.sort(key=lambda x: x[0], reverse=True)
+            return matching[0][1]
 
         return None
-
-    def is_active(self, repo_root: Optional[Path] = None) -> bool:
-        if os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID"):
-            return True
-        return self.detect_session_id(repo_root=repo_root) is not None
 
     def get_agent_identity(self, detected_model: Optional[str] = None) -> Tuple[str, str]:
         harness = "Antigravity CLI"
@@ -1187,6 +1130,19 @@ class ManualAdapter(BaseIngestionAdapter):
 DirectAdapter = ManualAdapter
 
 
+def get_configured_adapter(repo_root: Optional[Path] = None) -> Optional[str]:
+    """Returns the explicitly configured adapter name from env or git config, if any."""
+    env_val = os.environ.get("PROMPT_LOG_ADAPTER") or os.environ.get("GIT_PROMPT_LOG_ADAPTER")
+    if env_val:
+        v = env_val.strip().lower()
+        return "manual" if v == "direct" else v
+    code, out, _ = run_git(["config", "prompt-log.adapter"], repo_root=repo_root)
+    if code == 0 and out.strip():
+        v = out.strip().lower()
+        return "manual" if v == "direct" else v
+    return None
+
+
 class AdapterRegistry:
     """Registry coordinating discovery and selection of assistant ingestion adapters."""
 
@@ -1214,6 +1170,15 @@ class AdapterRegistry:
     ) -> Optional[BaseIngestionAdapter]:
         if preferred_name and preferred_name != "auto":
             return self.get(preferred_name)
+
+        # 1. Check explicit user configuration (git config or PROMPT_LOG_ADAPTER env)
+        configured = get_configured_adapter(repo_root=repo_root)
+        if configured and configured != "auto":
+            adapter = self.get(configured)
+            if adapter:
+                return adapter
+
+        # 2. In-shell agent signals
         for name in self._order:
             if name == "manual":
                 continue
@@ -1357,17 +1322,19 @@ def find_session_transcript(
 def cmd_adapters(args: argparse.Namespace) -> int:
     """Displays registered and active AI assistant ingestion adapters."""
     repo_root = get_repo_root()
+    configured = get_configured_adapter(repo_root=repo_root)
     active = REGISTRY.detect_active_adapter(repo_root=repo_root)
     adapters = REGISTRY.list_adapters()
 
     if getattr(args, "json", False):
         info = {
+            "configured": configured,
             "active": active.name if active else None,
             "adapters": [
                 {
                     "name": a.name,
                     "display_name": a.display_name,
-                    "active": a.is_active(repo_root=repo_root),
+                    "active": (a == active) or a.is_active(repo_root=repo_root),
                     "detected_session": a.detect_session_id(repo_root=repo_root),
                 }
                 for a in adapters
@@ -1376,9 +1343,14 @@ def cmd_adapters(args: argparse.Namespace) -> int:
         print(json.dumps(info, indent=2))
         return 0
 
+    if configured:
+        print(f"Configured Harness: {configured} (git config prompt-log.adapter)\n")
+    else:
+        print("Configured Harness: None (auto-detect)\n")
+
     print("Registered Ingestion Adapters:")
     for a in adapters:
-        is_act = a.is_active(repo_root=repo_root)
+        is_act = (a == active) or a.is_active(repo_root=repo_root)
         status = "active" if is_act else "inactive"
         sid = a.detect_session_id(repo_root=repo_root)
         details = f"session: {sid}" if sid else status
@@ -1389,6 +1361,47 @@ def cmd_adapters(args: argparse.Namespace) -> int:
         print(f"\nActive Harness: {active.display_name}" + (f" (session: {sid})" if sid else ""))
     else:
         print("\nActive Harness: None (Standard Git / Human Shell)")
+        print("\nTip: To explicitly set your default assistant harness, run:")
+        print("  git prompt-log harness <antigravity|claude|manual>")
+    return 0
+
+
+def cmd_harness(args: argparse.Namespace) -> int:
+    """Gets or sets the configured assistant harness / adapter."""
+    repo_root = get_repo_root()
+    name = getattr(args, "name", None)
+    global_flag = ["--global"] if getattr(args, "global_config", False) else []
+
+    if name in ("clear", "none", "auto"):
+        run_git(["config"] + global_flag + ["--unset", "prompt-log.adapter"], repo_root=repo_root)
+        scope = "globally" if global_flag else "for repository"
+        print(f"Cleared configured harness ({scope}). Automatic detection restored.")
+        return 0
+
+    if name:
+        target = "manual" if name == "direct" else name
+        code, _, err = run_git(["config"] + global_flag + ["prompt-log.adapter", target], repo_root=repo_root)
+        if code != 0:
+            sys.stderr.write(f"Error setting git config: {err}\n")
+            return 1
+        scope = "globally" if global_flag else "for repository"
+        print(f"Set active harness to '{target}' ({scope}, saved to git config prompt-log.adapter).")
+        return 0
+
+    configured = get_configured_adapter(repo_root=repo_root)
+    active = REGISTRY.detect_active_adapter(repo_root=repo_root)
+    if configured:
+        print(f"Configured Harness: {configured} (git config prompt-log.adapter)")
+    else:
+        print("Configured Harness: None (auto-detect)")
+
+    if active:
+        sid = active.detect_session_id(repo_root=repo_root)
+        print(f"Active Harness:     {active.display_name}" + (f" (session: {sid})" if sid else ""))
+    else:
+        print("Active Harness:     None (Standard Git / Human Shell)")
+        print("\nTo set your harness explicitly, run:")
+        print("  git prompt-log harness <antigravity|claude|manual>")
     return 0
 
 
@@ -2493,7 +2506,14 @@ def cmd_install_hook(args: argparse.Namespace) -> int:
     run_git(["config", "notes.rewriteRef", args.ref], repo_root=repo_root)
     print(f"Git configured: notes.rewriteRef = {args.ref}")
 
-    # 4. If called via 'init' and with_skill is true, install local repository skill
+    # 4. Explicitly configure default assistant harness / adapter if requested
+    adapter_arg = getattr(args, "adapter", None)
+    if adapter_arg and adapter_arg != "auto":
+        target = "manual" if adapter_arg == "direct" else adapter_arg
+        run_git(["config", "prompt-log.adapter", target], repo_root=repo_root)
+        print(f"Git configured: prompt-log.adapter = {target}")
+
+    # 5. If called via 'init' and with_skill is true, install local repository skill
     if getattr(args, "with_skill", False):
         skill_target = repo_root / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
         skill_target.parent.mkdir(parents=True, exist_ok=True)
@@ -2578,9 +2598,9 @@ def cmd_uninstall_hook(args: argparse.Namespace) -> int:
     if getattr(args, "all", False) or getattr(args, "with_config", False):
         for key in ("notes.rewrite.rebase", "notes.rewrite.amend", "notes.rewriteRef"):
             run_git(["config", "--unset", key], repo_root=repo_root)
-        for key in ("prompt-log.exclude", "prompt-note.exclude"):
+        for key in ("prompt-log.exclude", "prompt-note.exclude", "prompt-log.adapter"):
             run_git(["config", "--unset-all", key], repo_root=repo_root)
-        print("Cleaned local git config (notes.rewrite*, prompt-log.exclude)")
+        print("Cleaned local git config (notes.rewrite*, prompt-log.exclude, prompt-log.adapter)")
 
     if getattr(args, "all", False) or getattr(args, "with_skill", False):
         for folder_name in ("git-prompt-log", "git-prompt-note", "agy-prompt-note"):
@@ -2662,6 +2682,13 @@ def main():
         help="Do not install local repository assistant skill (default)",
     )
     p_init.add_argument(
+        "--adapter",
+        "-a",
+        choices=["antigravity", "claude", "manual", "auto"],
+        default=None,
+        help="Explicitly configure default assistant harness / adapter",
+    )
+    p_init.add_argument(
         "--no-post-commit",
         dest="with_post_commit",
         action="store_false",
@@ -2695,6 +2722,26 @@ def main():
         "adapters", help="List supported and active AI ingestion adapters", parents=[base_parser]
     )
     p_adapters.add_argument("--json", action="store_true", help="Output adapter information as JSON")
+
+    # harness / adapter
+    p_harness = subparsers.add_parser(
+        "harness",
+        aliases=["adapter"],
+        help="Get or set configured assistant harness (antigravity, claude, manual)",
+        parents=[base_parser],
+    )
+    p_harness.add_argument(
+        "name",
+        nargs="?",
+        choices=["antigravity", "claude", "manual", "auto", "none", "clear"],
+        help="Harness name to set (or 'clear' to restore auto-detection)",
+    )
+    p_harness.add_argument(
+        "--global",
+        dest="global_config",
+        action="store_true",
+        help="Configure harness globally across all repositories",
+    )
 
     # post-commit
     p_post_commit = subparsers.add_parser(
@@ -2742,6 +2789,13 @@ def main():
         dest="with_skill",
         action="store_false",
         help="Do not install local repository assistant skill (default)",
+    )
+    p_install.add_argument(
+        "--adapter",
+        "-a",
+        choices=["antigravity", "claude", "manual", "auto"],
+        default=None,
+        help="Explicitly configure default assistant harness / adapter",
     )
     p_install.add_argument(
         "--no-post-commit",
@@ -2807,6 +2861,8 @@ def main():
         sys.exit(cmd_record(args))
     elif args.command == "adapters":
         sys.exit(cmd_adapters(args))
+    elif args.command in ("harness", "adapter"):
+        sys.exit(cmd_harness(args))
     elif args.command == "session":
         sys.exit(cmd_session(args))
     elif args.command == "edit":

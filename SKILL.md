@@ -94,10 +94,13 @@ git prompt-log record -m "System architecture design" --harness "Human Dev" --mo
 ### Ingestion Adapters (Multi-Harness Support)
 `git-prompt-log` supports pluggable ingestion adapters (`antigravity`, `claude`, `manual`):
 ```bash
-# List all registered adapters and their detection status in current environment
-git prompt-log adapters
+# Explicitly set the active harness for this repository (or --global)
+git prompt-log harness antigravity
+# or via standard git config:
+git config prompt-log.adapter antigravity
 
-# Output adapter details as JSON
+# Inspect registered adapters, configured harness, and active detection
+git prompt-log adapters
 git prompt-log adapters --json
 
 # Explicitly record using a specific adapter
