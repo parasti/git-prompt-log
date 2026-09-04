@@ -99,9 +99,9 @@ git prompt-log harness antigravity
 # or via standard git config:
 git config prompt-log.harness antigravity
 
-# Inspect registered adapters, configured harness, and active detection
-git prompt-log adapters
-git prompt-log adapters --json
+# Inspect configured harness, active detection, and supported harnesses
+git prompt-log harness
+git prompt-log harness --json
 
 # Explicitly record using a specific adapter
 git prompt-log record --adapter claude -c HEAD

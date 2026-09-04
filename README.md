@@ -225,20 +225,12 @@ git prompt-log init --harness antigravity
 # Or override via environment variable
 export PROMPT_LOG_HARNESS=antigravity
 
-# View current configuration and detected session
+# View current configuration, active session, and supported harnesses
 git prompt-log harness
+git prompt-log harness --json
 
 # Clear configuration to restore auto-detection
 git prompt-log harness clear
-```
-
-### Inspecting Adapters
-
-Inspect registered adapters, configured harness, and active session details:
-
-```bash
-git prompt-log adapters
-git prompt-log adapters --json
 ```
 
 ### Manual Prompt Recording (Human or Scripted)

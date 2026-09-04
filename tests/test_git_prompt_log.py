@@ -1286,7 +1286,7 @@ class TestIngestionAdapters(unittest.TestCase):
         self.assertEqual(len(parsed["prompts"]), 1)
         self.assertEqual(parsed["prompts"][0].text, "Manual steer without transcript file")
 
-    def test_manual_record_cli_and_adapters_subcommand(self):
+    def test_manual_record_cli_and_harness_subcommand(self):
         repo_dir = self.work_dir / "test_repo"
         repo_dir.mkdir()
         subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
@@ -1301,11 +1301,11 @@ class TestIngestionAdapters(unittest.TestCase):
 
         script_path = str(bin_path)
 
-        # 1. Run adapters --json subcommand
-        res = subprocess.run(["python3", script_path, "adapters", "--json"], cwd=repo_dir, capture_output=True, text=True, check=True)
+        # 1. Run harness --json subcommand
+        res = subprocess.run(["python3", script_path, "harness", "--json"], cwd=repo_dir, capture_output=True, text=True, check=True)
         data = json.loads(res.stdout)
-        self.assertIn("adapters", data)
-        adapter_names = [a["name"] for a in data["adapters"]]
+        self.assertIn("harnesses", data)
+        adapter_names = [a["name"] for a in data["harnesses"]]
         self.assertIn("manual", adapter_names)
         self.assertIn("claude", adapter_names)
 
@@ -1396,8 +1396,8 @@ class TestIngestionAdapters(unittest.TestCase):
         conf = subprocess.check_output(["git", "config", "prompt-log.harness"], cwd=repo_dir, text=True).strip()
         self.assertEqual(conf, "claude")
 
-        # 3. adapters --json shows configured
-        res = subprocess.run(["python3", script_path, "adapters", "--json"], cwd=repo_dir, capture_output=True, text=True, check=True)
+        # 3. harness --json shows configured
+        res = subprocess.run(["python3", script_path, "harness", "--json"], cwd=repo_dir, capture_output=True, text=True, check=True)
         data = json.loads(res.stdout)
         self.assertEqual(data["configured"], "claude")
         self.assertEqual(data["active"], "claude")

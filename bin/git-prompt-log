@@ -1322,58 +1322,12 @@ def find_session_transcript(
     return data
 
 
-def cmd_adapters(args: argparse.Namespace) -> int:
-    """Displays registered and active AI assistant ingestion adapters."""
-    repo_root = get_repo_root()
-    configured = get_configured_harness(repo_root=repo_root)
-    active = REGISTRY.detect_active_adapter(repo_root=repo_root)
-    adapters = REGISTRY.list_adapters()
-
-    if getattr(args, "json", False):
-        info = {
-            "configured": configured,
-            "active": active.name if active else None,
-            "adapters": [
-                {
-                    "name": a.name,
-                    "display_name": a.display_name,
-                    "active": (a == active) or a.is_active(repo_root=repo_root),
-                    "detected_session": a.detect_session_id(repo_root=repo_root),
-                }
-                for a in adapters
-            ],
-        }
-        print(json.dumps(info, indent=2))
-        return 0
-
-    if configured:
-        print(f"Configured Harness: {configured} (git config prompt-log.harness)\n")
-    else:
-        print("Configured Harness: None (auto-detect)\n")
-
-    print("Registered Ingestion Adapters:")
-    for a in adapters:
-        is_act = (a == active) or a.is_active(repo_root=repo_root)
-        status = "active" if is_act else "inactive"
-        sid = a.detect_session_id(repo_root=repo_root)
-        details = f"session: {sid}" if sid else status
-        print(f"  * {a.name:<12} {a.display_name} ({details})")
-
-    if active:
-        sid = active.detect_session_id(repo_root=repo_root)
-        print(f"\nActive Harness: {active.display_name}" + (f" (session: {sid})" if sid else ""))
-    else:
-        print("\nActive Harness: None (Standard Git / Human Shell)")
-        print("\nTip: To explicitly set your default assistant harness, run:")
-        print("  git prompt-log harness <antigravity|claude|manual>")
-    return 0
-
-
 def cmd_harness(args: argparse.Namespace) -> int:
-    """Gets or sets the configured assistant harness / adapter."""
+    """Gets, sets, or lists assistant harnesses and active sessions."""
     repo_root = get_repo_root()
     name = getattr(args, "name", None)
     global_flag = ["--global"] if getattr(args, "global_config", False) else []
+    json_output = getattr(args, "json", False)
 
     if name in ("clear", "none", "auto"):
         run_git(["config"] + global_flag + ["--unset", "prompt-log.harness"], repo_root=repo_root)
@@ -1393,17 +1347,48 @@ def cmd_harness(args: argparse.Namespace) -> int:
 
     configured = get_configured_harness(repo_root=repo_root)
     active = REGISTRY.detect_active_adapter(repo_root=repo_root)
+    adapters = REGISTRY.list_adapters()
+
+    if json_output:
+        harness_items = [
+            {
+                "name": a.name,
+                "display_name": a.display_name,
+                "active": (a == active) or a.is_active(repo_root=repo_root),
+                "detected_session": a.detect_session_id(repo_root=repo_root),
+            }
+            for a in adapters
+        ]
+        info = {
+            "configured": configured,
+            "active": active.name if active else None,
+            "harnesses": harness_items,
+            "adapters": harness_items,
+        }
+        print(json.dumps(info, indent=2))
+        return 0
+
     if configured:
-        print(f"Configured Harness: {configured} (git config prompt-log.harness)")
+        print(f"Configured Harness: {configured} (git config prompt-log.harness)\n")
     else:
-        print("Configured Harness: None (auto-detect)")
+        print("Configured Harness: None (auto-detect)\n")
 
     if active:
         sid = active.detect_session_id(repo_root=repo_root)
-        print(f"Active Harness:     {active.display_name}" + (f" (session: {sid})" if sid else ""))
+        print(f"Active Harness:     {active.display_name}" + (f" (session: {sid})" if sid else "") + "\n")
     else:
-        print("Active Harness:     None (Standard Git / Human Shell)")
-        print("\nTo set your harness explicitly, run:")
+        print("Active Harness:     None (Standard Git / Human Shell)\n")
+
+    print("Supported Harnesses:")
+    for a in adapters:
+        is_act = (a == active) or a.is_active(repo_root=repo_root)
+        status = "active" if is_act else "inactive"
+        sid = a.detect_session_id(repo_root=repo_root)
+        details = f"session: {sid}" if sid else status
+        print(f"  * {a.name:<12} {a.display_name} ({details})")
+
+    if not configured:
+        print("\nTip: To explicitly set your default assistant harness, run:")
         print("  git prompt-log harness <antigravity|claude|manual>")
     return 0
 
@@ -2721,17 +2706,11 @@ def main():
     p_record.add_argument("--quiet", "-q", action="store_true", help="Suppress confirmation message")
     p_record.add_argument("--dry-run", "-n", action="store_true", help="Print note without writing to git")
 
-    # adapters
-    p_adapters = subparsers.add_parser(
-        "adapters", help="List supported and active AI ingestion adapters", parents=[base_parser]
-    )
-    p_adapters.add_argument("--json", action="store_true", help="Output adapter information as JSON")
-
     # harness / adapter
     p_harness = subparsers.add_parser(
         "harness",
         aliases=["adapter"],
-        help="Get or set configured assistant harness (antigravity, claude, manual)",
+        help="Get, set, or list assistant harnesses (antigravity, claude, manual)",
         parents=[base_parser],
     )
     p_harness.add_argument(
@@ -2745,6 +2724,11 @@ def main():
         dest="global_config",
         action="store_true",
         help="Configure harness globally across all repositories",
+    )
+    p_harness.add_argument(
+        "--json",
+        action="store_true",
+        help="Output harness and session information as JSON",
     )
 
     # post-commit
@@ -2864,8 +2848,6 @@ def main():
         sys.exit(cmd_uninstall_hook(args))
     elif args.command == "record":
         sys.exit(cmd_record(args))
-    elif args.command == "adapters":
-        sys.exit(cmd_adapters(args))
     elif args.command in ("harness", "adapter"):
         sys.exit(cmd_harness(args))
     elif args.command == "session":
