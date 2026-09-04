@@ -20,6 +20,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore
+
 
 DEFAULT_NOTES_REF = "refs/notes/commits"
 
@@ -423,7 +428,7 @@ def get_session_excludes_file(session_id: str, repo_root: Optional[Path] = None)
     brain = get_brain_dir()
     session_dir = brain / session_id
     if session_dir.exists():
-        return session_dir / ".prompt-log-excludes.json"
+        return session_dir / "prompt-log-excludes.json"
     common_git = get_common_git_dir(repo_root)
     fallback_dir = common_git / "prompt-log" / "sessions"
     fallback_dir.mkdir(parents=True, exist_ok=True)
@@ -433,6 +438,11 @@ def get_session_excludes_file(session_id: str, repo_root: Optional[Path] = None)
 def load_session_excludes(session_id: str, repo_root: Optional[Path] = None) -> Dict[str, Any]:
     """Loads session exclusions: {'patterns': [...], 'indices': [...], 'timestamps': [...]}."""
     fpath = get_session_excludes_file(session_id, repo_root=repo_root)
+    if not fpath.exists():
+        brain = get_brain_dir()
+        legacy_path = brain / session_id / ".prompt-log-excludes.json"
+        if legacy_path.exists():
+            fpath = legacy_path
     if fpath.exists():
         try:
             return json.loads(fpath.read_text(encoding="utf-8"))
@@ -446,6 +456,13 @@ def save_session_excludes(session_id: str, data: Dict[str, Any], repo_root: Opti
     fpath = get_session_excludes_file(session_id, repo_root=repo_root)
     fpath.parent.mkdir(parents=True, exist_ok=True)
     fpath.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    brain = get_brain_dir()
+    legacy_path = brain / session_id / ".prompt-log-excludes.json"
+    if legacy_path.exists() and legacy_path != fpath:
+        try:
+            legacy_path.unlink()
+        except Exception:
+            pass
 
 
 IGNORE_PREFIX_RE = re.compile(
@@ -671,11 +688,97 @@ class AntigravityAdapter(BaseIngestionAdapter):
     name = "antigravity"
     display_name = "Antigravity CLI"
 
-    def is_active(self, repo_root: Optional[Path] = None) -> bool:
-        return bool(os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID"))
+    def _get_ancestor_agy_pid(self) -> Optional[int]:
+        try:
+            pid = os.getppid()
+            for _ in range(10):
+                if pid <= 1:
+                    break
+                res = subprocess.run(
+                    ["ps", "-o", "ppid=,comm=", "-p", str(pid)],
+                    capture_output=True,
+                    text=True,
+                    timeout=0.5,
+                )
+                if res.returncode != 0:
+                    break
+                parts = res.stdout.strip().split(None, 1)
+                if len(parts) < 2:
+                    break
+                ppid_str, comm = parts
+                if Path(comm).name.lower() in ("agy", "antigravity"):
+                    return pid
+                pid = int(ppid_str)
+        except Exception:
+            pass
+        return None
+
+    def _session_matches_repo(self, session_id: str, repo_root: Optional[Path]) -> bool:
+        if not repo_root or not session_id:
+            return True
+        brain = get_brain_dir()
+        t_path = brain / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+        if not t_path.exists():
+            return False
+        repo_strs = {str(repo_root).lower(), repo_root.name.lower()}
+        try:
+            with open(t_path, "r", encoding="utf-8", errors="replace") as f:
+                header = "".join([f.readline() for _ in range(25)]).lower()
+            return any(r in header for r in repo_strs)
+        except Exception:
+            return False
 
     def detect_session_id(self, repo_root: Optional[Path] = None) -> Optional[str]:
-        return os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+        # 1. Explicit environment variables
+        sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+        if sid:
+            return sid
+
+        repo = repo_root or get_repo_root()
+
+        # 2. Check if running as a child/descendant of an agy process
+        agy_pid = self._get_ancestor_agy_pid()
+        if agy_pid:
+            try:
+                res = subprocess.run(
+                    ["lsof", "-p", str(agy_pid), "-Fn"],
+                    capture_output=True,
+                    text=True,
+                    timeout=0.5,
+                )
+                m = re.search(r"presence/([a-zA-Z0-9_-]+)\.lock", res.stdout)
+                if m and self._session_matches_repo(m.group(1), repo):
+                    return m.group(1)
+                m_brain = re.search(r"brain/([a-zA-Z0-9_-]{8,})", res.stdout)
+                if m_brain and self._session_matches_repo(m_brain.group(1), repo):
+                    return m_brain.group(1)
+            except Exception:
+                pass
+
+        # 3. Check presence/*.lock with active flock matching current repository
+        if fcntl is not None:
+            brain = get_brain_dir()
+            presence_dir = brain.parent / "presence"
+            if presence_dir.exists():
+                for lock_file in presence_dir.glob("*.lock"):
+                    candidate_sid = lock_file.stem
+                    try:
+                        with open(lock_file, "r") as f:
+                            try:
+                                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                fcntl.flock(f, fcntl.LOCK_UN)
+                            except (BlockingIOError, OSError):
+                                if self._session_matches_repo(candidate_sid, repo):
+                                    return candidate_sid
+                    except Exception:
+                        pass
+
+        return None
+
+    def is_active(self, repo_root: Optional[Path] = None) -> bool:
+        if os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID"):
+            return True
+        return self.detect_session_id(repo_root=repo_root) is not None
 
     def get_agent_identity(self, detected_model: Optional[str] = None) -> Tuple[str, str]:
         harness = "Antigravity CLI"

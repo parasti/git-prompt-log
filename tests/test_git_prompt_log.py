@@ -1183,6 +1183,43 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         self.assertEqual(len(prompts2_undropped), 3)
         self.assertIn("Accidental query about unrelated project", prompts2_undropped)
 
+        # 5. Verify exclusion filename has no leading dot in session dir
+        brain_session_dir = self.data_dir / "brain" / self.session_id
+        excludes_file = brain_session_dir / "prompt-log-excludes.json"
+        legacy_file = brain_session_dir / ".prompt-log-excludes.json"
+        self.assertTrue(excludes_file.exists())
+        self.assertFalse(legacy_file.exists())
+
+    def test_legacy_dot_excludes_file_migration(self):
+        legacy_session = "legacy-session-9876"
+        session_dir = self.data_dir / "brain" / legacy_session
+        session_dir.mkdir(parents=True, exist_ok=True)
+        legacy_file = session_dir / ".prompt-log-excludes.json"
+        legacy_file.write_text(json.dumps({"patterns": ["legacy_pattern"], "indices": [], "timestamps": []}))
+
+        orig_dir = os.environ.get("ANTIGRAVITY_DATA_DIR")
+        os.environ["ANTIGRAVITY_DATA_DIR"] = str(self.data_dir)
+        try:
+            # Loading reads legacy file
+            loaded = gpn.load_session_excludes(legacy_session)
+            self.assertEqual(loaded["patterns"], ["legacy_pattern"])
+
+            # Saving writes non-hidden file and cleans up legacy file
+            loaded["patterns"].append("new_pattern")
+            gpn.save_session_excludes(legacy_session, loaded)
+
+            new_file = session_dir / "prompt-log-excludes.json"
+            self.assertTrue(new_file.exists())
+            self.assertFalse(legacy_file.exists())
+            migrated = json.loads(new_file.read_text(encoding="utf-8"))
+            self.assertIn("legacy_pattern", migrated["patterns"])
+            self.assertIn("new_pattern", migrated["patterns"])
+        finally:
+            if orig_dir is not None:
+                os.environ["ANTIGRAVITY_DATA_DIR"] = orig_dir
+            else:
+                os.environ.pop("ANTIGRAVITY_DATA_DIR", None)
+
 
 class TestIngestionAdapters(unittest.TestCase):
     def setUp(self):
