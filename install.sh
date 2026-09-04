@@ -6,7 +6,7 @@ set -euo pipefail
 
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR="${PREFIX}/bin"
-SKILL_DIR="${HOME}/.gemini/config/skills/agy-prompt-note"
+SKILL_DIR="${HOME}/.gemini/config/skills/git-prompt-note"
 
 GLOBAL_GIT=""
 GLOBAL_SKILL=""

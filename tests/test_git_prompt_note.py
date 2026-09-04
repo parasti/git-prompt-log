@@ -313,9 +313,9 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         self.assertEqual(cfg_res, "refs/notes/commits")
 
         # 3. Local skill installed
-        skill_file = self.repo_dir / ".agents" / "skills" / "agy-prompt-note" / "SKILL.md"
+        skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-note" / "SKILL.md"
         self.assertTrue(skill_file.exists())
-        self.assertIn("agy-prompt-note", skill_file.read_text(encoding="utf-8"))
+        self.assertIn("git-prompt-note", skill_file.read_text(encoding="utf-8"))
 
     def test_init_no_post_commit(self):
         script_path = Path(gpn.__file__).resolve()
@@ -347,7 +347,7 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         script_path = Path(gpn.__file__).resolve()
         subprocess.run(["python3", str(script_path), "init"], cwd=self.repo_dir, check=True, capture_output=True)
         hooks_dir = self.repo_dir / ".git" / "hooks"
-        skill_file = self.repo_dir / ".agents" / "skills" / "agy-prompt-note" / "SKILL.md"
+        skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-note" / "SKILL.md"
         self.assertTrue(skill_file.exists())
 
         res = subprocess.run(["python3", str(script_path), "uninstall-hook", "--all"], cwd=self.repo_dir, capture_output=True, text=True)

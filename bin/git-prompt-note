@@ -1213,7 +1213,7 @@ def cmd_import_log(args: argparse.Namespace) -> int:
 
 
 DEFAULT_SKILL_MD = """---
-name: agy-prompt-note
+name: git-prompt-note
 description: >-
   Attaches AI session metadata, model/harness provenance, and human steering prompts
   directly to git notes on commits, provides deterministic prompt deduplication
@@ -1309,7 +1309,6 @@ After a PR is merged (even if squashed or rebased via GitHub's web UI), the main
 
 ```bash
 git prompt-note import-log prompts/2026_09_04_feature.md
-git push origin "refs/notes/*"
 ```
 
 ---
@@ -1444,7 +1443,7 @@ def cmd_install_hook(args: argparse.Namespace) -> int:
 
     # 4. If called via 'init' and with_skill is true, install local repository skill
     if getattr(args, "with_skill", False):
-        skill_target = repo_root / ".agents" / "skills" / "agy-prompt-note" / "SKILL.md"
+        skill_target = repo_root / ".agents" / "skills" / "git-prompt-note" / "SKILL.md"
         skill_target.parent.mkdir(parents=True, exist_ok=True)
         local_skill_src = Path(__file__).resolve().parent.parent / "SKILL.md"
         if local_skill_src.is_file():
@@ -1522,20 +1521,21 @@ def cmd_uninstall_hook(args: argparse.Namespace) -> int:
         print("Cleaned local git config (notes.rewrite*)")
 
     if getattr(args, "all", False) or getattr(args, "with_skill", False):
-        skill_target = repo_root / ".agents" / "skills" / "agy-prompt-note" / "SKILL.md"
-        if skill_target.exists():
-            skill_target.unlink()
-            print(f"Removed local skill {skill_target.relative_to(repo_root)}")
-            parent = skill_target.parent
-            while parent != repo_root:
-                try:
-                    if not any(parent.iterdir()):
-                        parent.rmdir()
-                        parent = parent.parent
-                    else:
+        for folder_name in ("git-prompt-note", "agy-prompt-note"):
+            skill_target = repo_root / ".agents" / "skills" / folder_name / "SKILL.md"
+            if skill_target.exists():
+                skill_target.unlink()
+                print(f"Removed local skill {skill_target.relative_to(repo_root)}")
+                parent = skill_target.parent
+                while parent != repo_root:
+                    try:
+                        if not any(parent.iterdir()):
+                            parent.rmdir()
+                            parent = parent.parent
+                        else:
+                            break
+                    except Exception:
                         break
-                except Exception:
-                    break
 
     return 0
 
@@ -1591,7 +1591,7 @@ def main():
         dest="with_skill",
         action="store_false",
         default=True,
-        help="Skip installing local .agents/skills/agy-prompt-note/SKILL.md",
+        help="Skip installing local .agents/skills/git-prompt-note/SKILL.md",
     )
     p_init.add_argument(
         "--no-post-commit",

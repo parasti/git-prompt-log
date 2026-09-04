@@ -1,183 +1,110 @@
 ---
-name: agy-prompt-note
+name: git-prompt-note
 description: >-
-  Attaches AI session metadata, model/harness provenance, and human steering prompts
-  directly to git notes on commits, provides deterministic prompt deduplication
-  across git rebase/squash, exports branch prompt logs for pull requests, and
-  re-hydrates prompt notes from merged logs. Use when authoring commits, recording
-  prompt notes, finalizing a feature branch, preparing a pull request, or landing
-  PR prompt logs.
+  Use this skill to answer questions about git-prompt-note and execute
+  git-prompt-note tasks (initializing repositories, inspecting notes,
+  exporting PR logs, re-hydrating merged logs, or managing accidental prompts)
+  when requested by the user.
 ---
 
-# Antigravity Git Prompt Note Skill
+# Git Prompt Note Skill
 
-Attaches AI session metadata, harness details, and human steering ("navigator") prompts directly to commits via standard Git notes (`refs/notes/commits`).
-
----
-
-## Why Git Notes
-
-Traditional prompt tracking either pollutes the git tree with markdown files (`prompts/*.md`) and requires rewriting commit trailers (`Prompt-Log:`), or relies on heavyweight daemons and full transcript logging (`git ai`) that bloats repositories and risks PII leakage.
-
-`agy-prompt-note` records the essential provenance directly onto git commits without altering commit hashes or tree objects:
-1. **Prompts over Transcripts:** Only the human steering prompts that set the course are stored; the patch itself already contains the code.
-2. **Zero Tree Pollution:** Git notes live in `refs/notes/commits` outside the commit DAG during active development.
-3. **Deterministic Rewrites:** Intelligent post-rewrite handling preserves, deduplicates, and merges session notes across `git rebase -i`, `squash`, `fixup`, and `commit --amend`.
-4. **Hybrid PR Workflow:** At the PR boundary, accumulated notes on the branch can be exported to a single reviewable markdown commit (`git prompt-note export-log --commit`), and re-hydrated back into upstream notes upon landing (`git prompt-note import-log <file>`).
+This skill guides the agent in answering user questions about `git-prompt-note` and executing tasks using the CLI when requested.
 
 ---
 
-## Schema
+## 1. What `git-prompt-note` Is & How It Works
 
-```text
-Assistant-Session: 9674eda6-390f-4b1d-9910-72bec1843401
-Assistant-Harness: Antigravity CLI 1.1.25
-Assistant-Model: Gemini 3.8 Flash (High)
-Assistant-Recorded: 2026-09-04 01:03:57 UTC
+When answering questions about the tool, use this technical foundation:
 
-Assistant-Prompts:
-  [2026-09-04 01:03:57 UTC] Pivot camera around ball origin
-  [2026-09-04 01:09:25 UTC] Let's implement this.
-```
-
-When squashing commits across different sessions, each session is preserved sequentially separated by `---`:
-
-```text
-Assistant-Session: 147638d8-6fb3-46df-a685-441b1aec2349
-Assistant-Harness: Antigravity CLI 1.1.24
-Assistant-Model: Gemini 3.8 Flash (High)
-Assistant-Recorded: 2026-09-02 18:30:12 UTC
-
-Assistant-Prompts:
-  [2026-09-02 18:25:01 UTC] Refactor camera mapping
+* **Purpose:** `git-prompt-note` records human steering prompts and agent session metadata directly onto Git commits via Git notes (`refs/notes/commits`).
+* **Automatic Recording:** During `git prompt-note init`, a `.git/hooks/post-commit` hook is installed. When an agent creates or amends a commit, this hook automatically detects the active session and records the prompt note on `HEAD`. For human commits, the hook is strictly a no-op.
+* **Rebase & Squash Reconciliation:** A `.git/hooks/post-rewrite` hook is installed. When Git rewrites commits (`rebase`, `squash`, `fixup`, `commit --amend`), the hook automatically merges, deduplicates, and preserves prompt notes on the resulting commits.
+* **Note Format:** Notes store session headers (`Assistant-Session`, `Assistant-Harness`, `Assistant-Model`, `Assistant-Recorded`) followed by `Assistant-Prompts:` listed in reverse chronological order (causal prompt first). Squashed commits across different sessions separate each session with `---`.
+* **Sharing Prompt Notes:** Notes are never pushed directly via git notes refs (`refs/notes/*`). Prompt notes are shared across repositories exclusively via markdown logs (`export-log` on the branch, and `import-log` upon landing).
 
 ---
 
-Assistant-Session: 9674eda6-390f-4b1d-9910-72bec1843401
-Assistant-Harness: Antigravity CLI 1.1.25
-Assistant-Model: Gemini 3.8 Flash (High)
-Assistant-Recorded: 2026-09-04 01:03:57 UTC
+## 2. Executing Tasks on Request
 
-Assistant-Prompts:
-  [2026-09-04 01:02:10 UTC] Fix pitch clamping
-```
+When the user asks you to perform operations with `git-prompt-note`, execute the appropriate commands:
 
----
-
-## Agent Runbook
-
-### 1. After Authoring a Commit (Local Recording)
-Whenever an agent creates or amends a commit on behalf of the user, record the steering prompts on `HEAD`:
-
+### Enable Prompt Notes in a Repository
+When asked to initialize or enable prompt notes:
 ```bash
-git prompt-note record
+git prompt-note init
 ```
+*Options to mention or use if requested:*
+* `--no-post-commit`: Skips installing the automatic post-commit hook.
+* `--no-skill`: Skips copying `.agents/skills/git-prompt-note/SKILL.md`.
 
-To view the recorded note on a commit:
+### Inspect Notes
+When asked to view or check prompt notes:
 ```bash
+# Formatted view of the note on HEAD (or any commit hash/ref)
 git prompt-note show HEAD
+
+# Or using native git log
+git log -n 1
+
+# View commit history annotated with active steering prompts
+git prompt-note log
 ```
 
-### 2. Preparing a Feature Branch for PR (Export Log)
-When a feature branch is complete and ready for pull request review, export the branch's accumulated prompt notes into a reviewable log commit:
-
+### Export Prompt Notes for Pull Requests
+When asked to prepare a branch for review, export notes, or package prompts for a PR:
 ```bash
-# Automatically detects branch range (e.g. main..HEAD), writes prompts/YYYY_MM_DD_<slug>.md, and commits it
 git prompt-note export-log --commit
 ```
+This detects the branch range against the upstream base branch, generates `prompts/YYYY_MM_DD_HHMMSS_<slug>.md`, and creates a commit on the branch so reviewers can see the prompt timeline in the PR diff.
 
-The exported file contains:
-- Human-readable session metadata and steering prompts for reviewers in the web PR diff.
-- An embedded metadata block that enables exact upstream re-hydration.
-
-### 3. Maintainer / Post-Merge (Import Log)
-After a PR is merged (even if squashed or rebased via GitHub's web UI), the maintainer re-hydrates the notes onto the landed commits on `main`:
-
+### Upstream Re-hydration (After Merge)
+When asked to land, import, or re-hydrate notes on `main` after a PR merge:
 ```bash
-git prompt-note import-log prompts/2026_09_04_feature.md
-git push origin "refs/notes/*"
+git prompt-note import-log prompts/YYYY_MM_DD_HHMMSS_<slug>.md
 ```
+This matches landed commits by commit hash or commit subject and attaches the prompt provenance back to `refs/notes/commits`.
 
----
-
-## Accidental Prompts & Parallel Sessions
-
-When running multiple agent sessions in parallel across different projects, accidental prompts can be prevented or retracted using simple markers:
-
-1. **Tag an Accidental Prompt Directly:**
-   Prefix the prompt with `[ignore]`, `[skip]`, `[wrong-session]`, or `[scratch]`:
-   ```text
-   [wrong-session] Fix the audio mixer volume slider
-   ```
-   Such prompts are automatically excluded from prompt notes.
-
-2. **Retract an Already-Sent Accidental Prompt:**
-   If a prompt was sent by mistake, follow up in that same session with:
-   ```text
-   [ignore-last]
-   ```
-   (or `[wrong-session]`, `[ignore-prev]`, `[retract]`).
-   This drops the preceding accidental prompt (and drops the retraction marker).
-   To drop multiple accidental prompts: `[ignore-last 2]`.
-   To reset all prompts accumulated in the session: `[ignore-all]`.
-
-3. **Retract and Provide Real Prompt in One Turn:**
-   ```text
-   [ignore-last] Actually, fix the level select camera
-   ```
-   Drops the previous message and records only the intended prompt.
-
-4. **Filtering and Editing Notes:**
-   ```bash
-   # Exclude prompts matching a regex when recording
-   git prompt-note record --drop "audio mixer"
-
-   # Drop last prompt when recording
-   git prompt-note record --drop-last 1
-
-   # Edit recorded note interactively in $EDITOR
-   git prompt-note edit HEAD
-   ```
-
----
-
-## CLI Reference
-
+### Manual Recording & Filtering
+If the user asks to record prompts manually or filter out specific turns:
 ```bash
-# Initialize in a repository (hooks, local git config, local skill)
-git prompt-note init
-
-# Uninstall hooks
-git prompt-note uninstall-hook
-
-# Completely remove hooks, git config, and local skill
-git prompt-note uninstall-hook --all
-
-# Record prompt note on HEAD (or --commit <hash>)
+# Record current session prompts onto HEAD
 git prompt-note record
 
-# Preview prompt note without writing to git
+# Preview without writing to git notes
 git prompt-note record --dry-run
 
-# Show prompt note on a commit
-git prompt-note show [commit]
+# Exclude prompts matching a regex pattern
+git prompt-note record --drop "temporary scratch"
 
-# Edit prompt note on a commit in $EDITOR
-git prompt-note edit [commit]
-
-# Export branch prompt notes to a markdown log file
-git prompt-note export-log [--range <base>..HEAD] [--output <file>] [--commit]
-
-# Import prompt notes from a log file into git notes
-git prompt-note import-log <file> [--commit <hash>]
+# Drop the last N prompts before recording
+git prompt-note record --drop-last 1
 ```
 
----
+### Interactive Note Editing
+When asked to edit or modify a recorded note directly:
+```bash
+git prompt-note edit HEAD
+```
 
-## Rebase and Squash Handling
+### Accidental Prompt Retraction (Parallel Sessions)
+When asked how to prevent or remove accidental prompts across parallel agent sessions, instruct or apply these markers:
+* **Tag on input:** Prefix prompts with `[ignore]`, `[skip]`, `[wrong-session]`, or `[scratch]` to exclude them from being recorded.
+* **Retract previous prompt:** Send `[ignore-last]` (or `[retract]`, `[wrong-session]`) to drop the preceding prompt.
+* **Retract multiple prompts:** Send `[ignore-last N]` (e.g. `[ignore-last 2]`) or `[ignore-all]`.
+* **Retract and steer in one turn:** `[ignore-last] Actually, do this instead...`.
 
-When Git rewrites commits (`rebase`, `commit --amend`, `squash`, `fixup`), the installed `.git/hooks/post-rewrite` hook invokes `git prompt-note post-rewrite`:
+### Sharing Notes (Export & Import Only)
+Prompt notes must never be pushed directly via `refs/notes/*`. Prompt notes are shared across remotes exclusively via markdown logs:
+1. Export on branch before PR: `git prompt-note export-log --commit`
+2. Land and re-hydrate on target branch: `git prompt-note import-log <path>`
 
-1. **Same-Session Squash:** Prompts from all squashed commits are unioned, deduplicated, and sorted chronologically into a single session entry with the latest `Recorded` timestamp.
-2. **Cross-Session Squash:** Multiple session entries are preserved in chronological order separated by `---`.
-3. **1-to-1 Rebase / Amend:** The note is transferred to the new commit hash, appending newly executed steering prompts if amended within an active session.
+### Uninstall Hooks or Configuration
+When asked to remove `git-prompt-note` from a repository:
+```bash
+# Remove repository hooks only
+git prompt-note uninstall-hook
+
+# Completely remove hooks, unset local git notes config, and remove local skill
+git prompt-note uninstall-hook --all
+```
