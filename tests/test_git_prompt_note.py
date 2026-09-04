@@ -640,7 +640,7 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         subprocess.run(["git", "commit", "-m", msg], cwd=self.repo_dir, check=True, capture_output=True, env=self.env)
         return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True, env=self.env).strip()
 
-    def test_sequential_commits_high_water_mark(self):
+    def test_sequential_commits_cumulative_history(self):
         # 1. First prompt and commit
         self._append_prompt("Implement feature part 1", "2026-09-04T10:00:00Z")
         sha1 = self._commit("file1.txt", "v1", "feat: Feature part 1")
@@ -656,17 +656,35 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         self._append_prompt("Implement feature part 2", "2026-09-04T10:05:00Z")
         sha2 = self._commit("file2.txt", "v2", "feat: Feature part 2")
 
-        # Commit 2 should ONLY have the second prompt
+        # Commit 2 carries full cumulative history (Prompt 1 + Prompt 2)
         note2_raw = gpn.get_note_content(sha2, repo_root=self.repo_dir)
         self.assertIsNotNone(note2_raw)
         notes2 = gpn.parse_notes(note2_raw)
         self.assertEqual(len(notes2), 1)
-        self.assertEqual(len(notes2[0].prompts), 1)
-        self.assertEqual(notes2[0].prompts[0].text, "Implement feature part 2")
+        self.assertEqual(len(notes2[0].prompts), 2)
+        self.assertEqual(notes2[0].prompts[0].text, "Implement feature part 1")
+        self.assertEqual(notes2[0].prompts[1].text, "Implement feature part 2")
 
-        # Commit 1 still has prompt 1
+        # Commit 1 still retains its original snapshot
         note1_check = gpn.get_note_content(sha1, repo_root=self.repo_dir)
         self.assertEqual(note1_check, note1_raw)
+
+        # Verify show --active and show --incremental
+        out_active = subprocess.check_output(
+            ["python3", str(Path(gpn.__file__).resolve()), "show", "--active", sha2],
+            cwd=self.repo_dir,
+            text=True,
+            env=self.env,
+        ).strip()
+        self.assertEqual(out_active, "[2026-09-04 10:05:00 UTC] Implement feature part 2")
+
+        out_inc = subprocess.check_output(
+            ["python3", str(Path(gpn.__file__).resolve()), "show", "--incremental", sha2],
+            cwd=self.repo_dir,
+            text=True,
+            env=self.env,
+        ).strip()
+        self.assertEqual(out_inc, "[2026-09-04 10:05:00 UTC] Implement feature part 2")
 
     def test_commit_amend_carries_and_merges_note(self):
         self._append_prompt("Initial commit prompt", "2026-09-04T10:00:00Z")
@@ -745,8 +763,9 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         note_raw = gpn.get_note_content(sha_rebased, repo_root=self.repo_dir)
         self.assertIsNotNone(note_raw)
         notes = gpn.parse_notes(note_raw)
-        self.assertEqual(len(notes), 1)
-        self.assertEqual(notes[0].prompts[0].text, "Feature work")
+        self.assertEqual(len(notes[0].prompts), 2)
+        self.assertEqual(notes[0].prompts[0].text, "Base commit")
+        self.assertEqual(notes[0].prompts[1].text, "Feature work")
 
     def test_rebase_drop_narrative_lands_on_replacement_commit(self):
         # 1. Base commit
@@ -778,13 +797,14 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         self.assertEqual(len(notes1[0].prompts), 1)
         self.assertEqual(notes1[0].prompts[0].text, "Implement basic audio engine")
 
-        # Verify replacement commit sha3 has BOTH the dead-end prompt and the redirection prompt
+        # Replacement commit sha3 retains full cumulative lineage: inception, dead-end, and redirect!
         note3_raw = gpn.get_note_content(sha3, repo_root=self.repo_dir)
         self.assertIsNotNone(note3_raw)
         notes3 = gpn.parse_notes(note3_raw)
-        self.assertEqual(len(notes3[0].prompts), 2)
-        self.assertEqual(notes3[0].prompts[0].text, "Try implementing custom Doppler shift calculation in audio update loop")
-        self.assertEqual(notes3[0].prompts[1].text, "The custom Doppler math is causing distortion. Drop that commit and use OpenAL distance attenuation instead")
+        self.assertEqual(len(notes3[0].prompts), 3)
+        self.assertEqual(notes3[0].prompts[0].text, "Implement basic audio engine")
+        self.assertEqual(notes3[0].prompts[1].text, "Try implementing custom Doppler shift calculation in audio update loop")
+        self.assertEqual(notes3[0].prompts[2].text, "The custom Doppler math is causing distortion. Drop that commit and use OpenAL distance attenuation instead")
 
     def test_rebase_reorder_commits_preserves_notes_without_duplication(self):
         # 1. Base commit
@@ -808,20 +828,64 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         new_sha_a = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
         new_sha_b = subprocess.check_output(["git", "rev-parse", "HEAD~1"], cwd=self.repo_dir, text=True).strip()
 
-        # Both reordered commits must retain their exact notes
+        # Both reordered commits retain their respective notes
         note_a = gpn.parse_notes(gpn.get_note_content(new_sha_a, repo_root=self.repo_dir))[0]
         note_b = gpn.parse_notes(gpn.get_note_content(new_sha_b, repo_root=self.repo_dir))[0]
+        self.assertEqual(len(note_a.prompts), 1)
         self.assertEqual(note_a.prompts[0].text, "Feature A (Sound)")
-        self.assertEqual(note_b.prompts[0].text, "Feature B (Music)")
+        self.assertEqual(len(note_b.prompts), 2)
+        self.assertEqual(note_b.prompts[1].text, "Feature B (Music)")
 
         # 4. Author a subsequent commit C in the same session
         self._append_prompt("Feature C (UI)", "2026-09-04T10:15:00Z")
         sha_c = self._commit("ui.txt", "ui", "feat: UI")
 
-        # Commit C must receive ONLY its own prompt (no duplication of B even though B was originally created later)
+        # Commit C receives all prompts up to its creation
         note_c = gpn.parse_notes(gpn.get_note_content(sha_c, repo_root=self.repo_dir))[0]
-        self.assertEqual(len(note_c.prompts), 1)
-        self.assertEqual(note_c.prompts[0].text, "Feature C (UI)")
+        self.assertEqual(len(note_c.prompts), 3)
+        self.assertEqual(note_c.prompts[-1].text, "Feature C (UI)")
+
+    def test_git_reset_recommit_preserves_cumulative_history(self):
+        # 1. Base commit
+        self._commit("base.txt", "base", "chore: Base commit")
+
+        # 2. Turn 1
+        self._append_prompt("First attempt at parser", "2026-09-04T10:00:00Z")
+        sha1 = self._commit("p.txt", "parser", "feat: Parser")
+
+        # 3. Turn 2
+        self._append_prompt("First attempt at AST", "2026-09-04T10:05:00Z")
+        sha2 = self._commit("a.txt", "ast", "feat: AST")
+
+        # 4. Turn 3: Agent does a hard/soft reset to clean up and re-split
+        self._append_prompt("Reset and re-split cleanly into tokens and parser", "2026-09-04T10:10:00Z")
+        subprocess.run(["git", "reset", "--soft", "HEAD~2"], cwd=self.repo_dir, check=True)
+
+        # Author replacement commits
+        sha_new1 = self._commit("tokens.txt", "tokens", "feat: Tokens")
+        sha_new2 = self._commit("parser.txt", "parser_clean", "feat: Clean Parser")
+
+        # Both replacement commits must preserve the full session history!
+        note_new1 = gpn.parse_notes(gpn.get_note_content(sha_new1, repo_root=self.repo_dir))[0]
+        note_new2 = gpn.parse_notes(gpn.get_note_content(sha_new2, repo_root=self.repo_dir))[0]
+
+        self.assertEqual(len(note_new1.prompts), 3)
+        self.assertEqual(note_new1.prompts[0].text, "First attempt at parser")
+        self.assertEqual(note_new1.prompts[1].text, "First attempt at AST")
+        self.assertEqual(note_new1.prompts[2].text, "Reset and re-split cleanly into tokens and parser")
+
+        self.assertEqual(len(note_new2.prompts), 3)
+        self.assertEqual(note_new2.prompts[2].text, "Reset and re-split cleanly into tokens and parser")
+
+        # Log command displays cleanly
+        out_log = subprocess.check_output(
+            ["python3", str(Path(gpn.__file__).resolve()), "log"],
+            cwd=self.repo_dir,
+            text=True,
+            env=self.env,
+        )
+        self.assertIn("feat: Clean Parser", out_log)
+        self.assertIn("Reset and re-split cleanly into tokens and parser", out_log)
 
 
 if __name__ == "__main__":

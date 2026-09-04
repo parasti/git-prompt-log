@@ -632,42 +632,17 @@ def cmd_record(args: argparse.Namespace) -> int:
     session_id = session_data["session_id"]
     all_prompts: List[PromptEntry] = session_data.get("prompts", [])
 
-    # Filter prompts leading up to this commit:
-    # Check ancestor commits on the branch for notes with this session_id
-    code, log_out, _ = run_git(["log", "--format=%H", f"{commit_hash}~1", "-n", "50"], repo_root=repo_root)
-    ancestor_prompt_keys: Set[Tuple[str, str]] = set()
-    max_ancestor_ts: Optional[str] = None
-
-    if code == 0 and log_out:
-        for anc_hash in log_out.splitlines():
-            anc_note_raw = get_note_content(anc_hash, ref=ref, repo_root=repo_root)
-            if anc_note_raw:
-                anc_notes = parse_notes(anc_note_raw)
-                for an in anc_notes:
-                    if an.session_id == session_id and an.prompts:
-                        for p in an.prompts:
-                            pts = parse_timestamp_sort_key(p.timestamp)
-                            ancestor_prompt_keys.add((pts, p.text.strip()))
-                            if max_ancestor_ts is None or pts > max_ancestor_ts:
-                                max_ancestor_ts = pts
-
     commit_sort_ts = parse_timestamp_sort_key(commit_date_utc)
     target_prompts: List[PromptEntry] = []
 
     for p in all_prompts:
         pts = parse_timestamp_sort_key(p.timestamp)
-        key = (pts, p.text.strip())
-        # Skip prompts that are already recorded on any ancestor commit
-        if key in ancestor_prompt_keys:
-            continue
-        # Also skip prompts older than the latest ancestor checkpoint
-        if max_ancestor_ts and pts <= max_ancestor_ts:
-            continue
-        target_prompts.append(p)
+        if pts <= commit_sort_ts:
+            target_prompts.append(p)
 
     if not target_prompts and all_prompts:
-        # Fallback to all session prompts if ancestor filtering excluded everything
-        target_prompts = all_prompts
+        # Fallback to all session prompts if commit timestamp slightly precedes prompt log
+        target_prompts = list(all_prompts)
 
     if getattr(args, "exclude", None):
         pat = re.compile(args.exclude, re.IGNORECASE)
@@ -821,6 +796,40 @@ def cmd_show(args: argparse.Namespace) -> int:
         sys.stderr.write(f"No prompt note on commit {commit_out[:8]}.\n")
         return 1
 
+    if getattr(args, "active", False):
+        notes = parse_notes(content)
+        if not notes or not notes[-1].prompts:
+            sys.stderr.write(f"No prompts found in note on commit {commit_out[:8]}.\n")
+            return 1
+        active_p = notes[-1].prompts[-1]
+        print(f"[{active_p.timestamp}] {active_p.text}")
+        return 0
+
+    if getattr(args, "incremental", False):
+        code_p, parent_out, _ = run_git(["rev-parse", f"{commit_out}~1"], repo_root=repo_root)
+        parent_prompt_keys = set()
+        if code_p == 0 and parent_out:
+            parent_raw = get_note_content(parent_out.strip(), ref=args.ref, repo_root=repo_root)
+            if parent_raw:
+                for pn in parse_notes(parent_raw):
+                    for p in pn.prompts:
+                        parent_prompt_keys.add((parse_timestamp_sort_key(p.timestamp), p.text.strip()))
+
+        notes = parse_notes(content)
+        inc_prompts = []
+        for n in notes:
+            for p in n.prompts:
+                key = (parse_timestamp_sort_key(p.timestamp), p.text.strip())
+                if key not in parent_prompt_keys:
+                    inc_prompts.append(p)
+
+        if not inc_prompts and notes and notes[-1].prompts:
+            inc_prompts = [notes[-1].prompts[-1]]
+
+        for p in inc_prompts:
+            print(f"[{p.timestamp}] {p.text}")
+        return 0
+
     print(content.strip())
     return 0
 
@@ -855,6 +864,43 @@ def get_default_slug(repo_root: Path) -> str:
         name = subj or "session"
     cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower()
     return cleaned or "feature"
+
+
+def cmd_log(args: argparse.Namespace) -> int:
+    """Displays commits in range with their active steering prompts."""
+    repo_root = get_repo_root()
+    commit_range = getattr(args, "range", None) or get_default_branch_range(repo_root)
+    git_cmd = ["log", "--format=%H %s"]
+    if getattr(args, "max_count", None):
+        git_cmd.extend(["-n", str(args.max_count)])
+    git_cmd.append(commit_range)
+
+    code, log_out, _ = run_git(git_cmd, repo_root=repo_root)
+    if code != 0 or not log_out.strip():
+        limit = getattr(args, "max_count", 10) or 10
+        code, log_out, _ = run_git(["log", "--format=%H %s", "-n", str(limit), "HEAD"], repo_root=repo_root)
+        if code != 0 or not log_out.strip():
+            return 0
+
+    commits = [line.split(" ", 1) for line in log_out.splitlines() if line.strip()]
+    for parts in commits:
+        c_hash = parts[0]
+        subj = parts[1] if len(parts) > 1 else ""
+        note_raw = get_note_content(c_hash, ref=args.ref, repo_root=repo_root)
+        print(f"* {c_hash[:8]} {subj}")
+        if note_raw:
+            notes = parse_notes(note_raw)
+            if notes and notes[-1].prompts:
+                if getattr(args, "full", False):
+                    for p in notes[-1].prompts:
+                        indented = p.text.replace("\n", "\n    ")
+                        print(f"  [{p.timestamp}] {indented}")
+                else:
+                    active_p = notes[-1].prompts[-1]
+                    indented = active_p.text.replace("\n", "\n    ")
+                    print(f"  [{active_p.timestamp}] {indented}")
+        print()
+    return 0
 
 
 def cmd_export_log(args: argparse.Namespace) -> int:
@@ -1494,6 +1540,14 @@ def main():
     # show
     p_show = subparsers.add_parser("show", help="Display prompt note on a commit", parents=[base_parser])
     p_show.add_argument("commit", nargs="?", default="HEAD", help="Target commit hash or ref")
+    p_show.add_argument("--active", "-a", action="store_true", help="Display only the active steering prompt")
+    p_show.add_argument("--incremental", "-i", action="store_true", help="Display only incremental prompts since parent commit")
+
+    # log
+    p_log = subparsers.add_parser("log", help="Display commits with their steering prompts", parents=[base_parser])
+    p_log.add_argument("range", nargs="?", help="Commit range (default: detected branch range)")
+    p_log.add_argument("-n", "--max-count", type=int, dest="max_count", help="Limit number of commits to display")
+    p_log.add_argument("--full", action="store_true", help="Display full cumulative prompts instead of active prompt")
 
     # edit
     p_edit = subparsers.add_parser("edit", help="Edit prompt note on a commit in $EDITOR", parents=[base_parser])
@@ -1557,6 +1611,8 @@ def main():
         sys.exit(cmd_post_rewrite(args))
     elif args.command == "show":
         sys.exit(cmd_show(args))
+    elif args.command == "log":
+        sys.exit(cmd_log(args))
     elif args.command == "export-log":
         sys.exit(cmd_export_log(args))
     elif args.command == "import-log":
