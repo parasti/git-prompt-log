@@ -728,6 +728,274 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def get_default_branch_range(repo_root: Path) -> str:
+    """Determines a sensible default revision range for the current branch."""
+    code, branch, _ = run_git(["rev-parse", "--abbrev-ref", "HEAD"], repo_root=repo_root)
+    current_branch = branch.strip() if code == 0 else ""
+
+    # 1. Upstream tracking branch (if different from current)
+    code, out, _ = run_git(["rev-parse", "--abbrev-ref", "@{u}"], repo_root=repo_root)
+    if code == 0 and out.strip() and out.strip() != current_branch:
+        return f"{out.strip()}..HEAD"
+
+    # 2. Origin/main or origin/master (if not currently on that branch)
+    for b in ("origin/main", "origin/master", "main", "master"):
+        if b != current_branch:
+            c, _, _ = run_git(["rev-parse", "--verify", b], repo_root=repo_root)
+            if c == 0:
+                return f"{b}..HEAD"
+
+    return "HEAD~1..HEAD"
+
+
+def get_default_slug(repo_root: Path) -> str:
+    """Derives a concise snake_case slug from branch name or latest commit subject."""
+    code, branch, _ = run_git(["rev-parse", "--abbrev-ref", "HEAD"], repo_root=repo_root)
+    if code == 0 and branch and branch not in ("HEAD", "main", "master"):
+        name = branch.replace("/", "_").replace("-", "_")
+    else:
+        code, subj, _ = run_git(["log", "-n", "1", "--format=%s", "HEAD"], repo_root=repo_root)
+        name = subj or "session"
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", name).strip("_").lower()
+    return cleaned or "feature"
+
+
+def cmd_export_log(args: argparse.Namespace) -> int:
+    """
+    Exports prompt notes from a commit range to a human-readable Markdown log file
+    with an embedded JSON envelope for lossless re-hydration.
+    """
+    repo_root = get_repo_root()
+    ref = args.ref
+    commit_range = args.range or get_default_branch_range(repo_root)
+
+    # Resolve commits in range in chronological order
+    code, out, err = run_git(["rev-list", "--reverse", commit_range], repo_root=repo_root)
+    if code != 0 or not out.strip():
+        # Fallback to single HEAD commit if range rev-list was empty
+        code, head_sha, _ = run_git(["rev-parse", "HEAD"], repo_root=repo_root)
+        commit_shas = [head_sha] if code == 0 and head_sha else []
+    else:
+        commit_shas = [line.strip() for line in out.strip().splitlines() if line.strip()]
+
+    if not commit_shas:
+        sys.stderr.write(f"Error: No commits found in range '{commit_range}'.\n")
+        return 1
+
+    commit_entries = []
+    all_session_notes = []
+    for sha in commit_shas:
+        c_code, c_subj, _ = run_git(["log", "-n", "1", "--format=%s", sha], repo_root=repo_root)
+        raw = get_note_content(sha, ref=ref, repo_root=repo_root)
+        notes = parse_notes(raw) if raw else []
+        if notes:
+            commit_entries.append({
+                "hash": sha,
+                "subject": c_subj or "",
+                "note_raw": raw.strip(),
+                "notes": notes,
+            })
+            all_session_notes.extend(notes)
+
+    if not commit_entries:
+        sys.stderr.write(f"Warning: No prompt notes found on commits in range '{commit_range}'.\n")
+        return 1
+
+    merged_sessions = merge_session_notes(all_session_notes)
+    slug = args.slug or get_default_slug(repo_root)
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    ts_file = now_utc.strftime("%Y_%m_%d_%H%M%S")
+    ts_human = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    # Generate Markdown content
+    lines = []
+    lines.append(f"# Prompt Log: {slug.replace('_', ' ').title()}")
+    lines.append("")
+    lines.append(f"- **Exported:** {ts_human}")
+    for s in merged_sessions:
+        lines.append(f"- **Session:** `{s.session_id}`")
+        lines.append(f"- **Harness:** {s.harness}")
+        lines.append(f"- **Model:** {s.model}")
+    lines.append("")
+    lines.append("## Commits")
+    lines.append("")
+    for c in commit_entries:
+        lines.append(f"- `{c['hash'][:8]}` {c['subject']}")
+    lines.append("")
+    lines.append("## Steering Prompts")
+    lines.append("")
+    for s in merged_sessions:
+        if len(merged_sessions) > 1:
+            lines.append(f"### Session `{s.session_id[:8]}` ({s.model})")
+            lines.append("")
+        for p in s.prompts:
+            lines.append(f"#### [{p.timestamp}]")
+            lines.append("")
+            lines.append(f"> {p.text.replace(chr(10), chr(10) + '> ')}")
+            lines.append("")
+
+    # Machine-readable envelope for lossless import
+    envelope = {
+        "version": 1,
+        "exported_at": ts_human,
+        "slug": slug,
+        "commits": [
+            {
+                "hash": c["hash"],
+                "subject": c["subject"],
+                "note": c["note_raw"],
+            }
+            for c in commit_entries
+        ],
+    }
+    lines.append("<!-- git-prompt-note:metadata")
+    lines.append(json.dumps(envelope, indent=2))
+    lines.append("-->")
+    lines.append("")
+
+    md_content = "\n".join(lines)
+
+    if getattr(args, "stdout", False):
+        sys.stdout.write(md_content)
+        return 0
+
+    if args.output:
+        out_path = Path(args.output)
+        if not out_path.is_absolute():
+            out_path = repo_root / out_path
+    else:
+        out_path = repo_root / "prompts" / f"{ts_file}_{slug}.md"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(md_content, encoding="utf-8")
+    rel_path = out_path.relative_to(repo_root) if out_path.is_relative_to(repo_root) else out_path
+    print(f"Exported prompt log to {rel_path}")
+
+    if getattr(args, "commit", False):
+        run_git(["add", str(out_path)], repo_root=repo_root)
+        commit_msg = f"prompts: Export prompt log for {slug.replace('_', ' ')}"
+        c_code, _, c_err = run_git(["commit", "-m", commit_msg], repo_root=repo_root)
+        if c_code == 0:
+            print(f"Committed prompt log: '{commit_msg}'")
+        else:
+            sys.stderr.write(f"Failed to commit prompt log: {c_err}\n")
+            return 1
+
+    return 0
+
+
+def cmd_import_log(args: argparse.Namespace) -> int:
+    """
+    Imports prompt notes from an exported log file back into Git notes (refs/notes/commits).
+    Reconciles commits by exact hash, or falls back to matching by commit subject if squashed/rebased.
+    """
+    repo_root = get_repo_root()
+    ref = args.ref
+    log_file = Path(args.file)
+    if not log_file.is_absolute():
+        log_file = repo_root / log_file
+
+    if not log_file.is_file():
+        sys.stderr.write(f"Error: Log file '{log_file}' not found.\n")
+        return 1
+
+    content = log_file.read_text(encoding="utf-8")
+
+    # Extract metadata block if present
+    meta_m = re.search(r"<!-- git-prompt-note:metadata\s*(.*?)\s*-->", content, re.DOTALL)
+    imported_count = 0
+
+    if meta_m:
+        try:
+            data = json.loads(meta_m.group(1))
+            commits_data = data.get("commits", [])
+        except Exception as e:
+            sys.stderr.write(f"Error parsing metadata envelope: {e}\n")
+            return 1
+
+        for c_entry in commits_data:
+            orig_hash = c_entry.get("hash", "")
+            subject = c_entry.get("subject", "")
+            note_raw = c_entry.get("note", "")
+            if not note_raw:
+                continue
+
+            target_sha = None
+
+            # Explicit commit override
+            if args.commit:
+                target_sha = args.commit
+            else:
+                # Check if exact hash exists and is reachable from HEAD in current repository
+                if orig_hash:
+                    c, out, _ = run_git(["rev-parse", "--verify", f"{orig_hash}^{{commit}}"], repo_root=repo_root)
+                    if c == 0:
+                        resolved = out.strip()
+                        anc_c, _, _ = run_git(["merge-base", "--is-ancestor", resolved, "HEAD"], repo_root=repo_root)
+                        if anc_c == 0:
+                            target_sha = resolved
+
+                # If exact hash is not reachable on HEAD, search for commit with matching subject
+                if not target_sha and subject:
+                    c, out, _ = run_git(["log", "-n", "50", "--format=%H %s"], repo_root=repo_root)
+                    if c == 0:
+                        for line in out.strip().splitlines():
+                            parts = line.split(" ", 1)
+                            if len(parts) == 2 and parts[1].strip() == subject.strip():
+                                target_sha = parts[0].strip()
+                                break
+
+            if not target_sha:
+                # Fallback to HEAD if single commit entry and nowhere else to attach
+                if len(commits_data) == 1:
+                    c, out, _ = run_git(["rev-parse", "HEAD"], repo_root=repo_root)
+                    if c == 0:
+                        target_sha = out.strip()
+
+            if target_sha:
+                # Parse existing note and merge
+                existing_raw = get_note_content(target_sha, ref=ref, repo_root=repo_root) or ""
+                prefix, _, suffix = extract_prompt_block(existing_raw)
+                existing_notes = parse_notes(existing_raw)
+                incoming_notes = parse_notes(note_raw)
+
+                merged = merge_session_notes(existing_notes + incoming_notes)
+                serialized = serialize_notes(merged)
+                final_note = wrap_prompt_block(serialized, prefix=prefix, suffix=suffix)
+
+                if write_note_content(target_sha, final_note, ref=ref, repo_root=repo_root):
+                    print(f"Imported prompt note for {target_sha[:8]} ('{subject}')")
+                    imported_count += 1
+            else:
+                sys.stderr.write(f"Warning: Could not resolve target commit for '{subject}' ({orig_hash[:8]}).\n")
+    else:
+        # Plain markdown fallback: parse the note block directly from content
+        parsed = parse_notes(content)
+        if not parsed:
+            sys.stderr.write("Error: No parseable prompt notes or metadata found in log file.\n")
+            return 1
+
+        target_sha = args.commit or "HEAD"
+        c, out, _ = run_git(["rev-parse", target_sha], repo_root=repo_root)
+        if c != 0:
+            sys.stderr.write(f"Error resolving target commit '{target_sha}'.\n")
+            return 1
+        resolved_sha = out.strip()
+
+        existing_raw = get_note_content(resolved_sha, ref=ref, repo_root=repo_root) or ""
+        prefix, _, suffix = extract_prompt_block(existing_raw)
+        existing_notes = parse_notes(existing_raw)
+        merged = merge_session_notes(existing_notes + parsed)
+        serialized = serialize_notes(merged)
+        final_note = wrap_prompt_block(serialized, prefix=prefix, suffix=suffix)
+
+        if write_note_content(resolved_sha, final_note, ref=ref, repo_root=repo_root):
+            print(f"Imported prompt note for {resolved_sha[:8]} from markdown")
+            imported_count += 1
+
+    return 0 if imported_count > 0 else 1
+
+
 DEFAULT_SKILL_MD = """---
 name: agy-prompt-note
 description: Attaches AI session metadata and human steering prompts directly to git notes on commits.
@@ -878,6 +1146,23 @@ def main():
         help="Also install post-commit hook (strictly active only when AGY_SESSION_ID is set)",
     )
 
+    # export-log
+    p_export = subparsers.add_parser(
+        "export-log", help="Export prompt notes across branch commits to a markdown log", parents=[base_parser]
+    )
+    p_export.add_argument("--range", "-r", help="Commit range (default: detected branch range, e.g. main..HEAD)")
+    p_export.add_argument("--output", "-o", help="Target output filepath (default: prompts/YYYY_MM_DD_HHMMSS_<slug>.md)")
+    p_export.add_argument("--slug", help="Custom slug name for the exported log")
+    p_export.add_argument("--commit", action="store_true", help="Stage and commit the exported markdown log file")
+    p_export.add_argument("--stdout", action="store_true", help="Print log to stdout instead of writing to a file")
+
+    # import-log
+    p_import = subparsers.add_parser(
+        "import-log", help="Import prompt notes from an exported markdown log file into git notes", parents=[base_parser]
+    )
+    p_import.add_argument("file", help="Path to exported prompt log markdown file")
+    p_import.add_argument("--commit", "-c", help="Attach to a specific target commit instead of resolving from log")
+
     args = parser.parse_args()
 
     if args.command in ("init", "install-hook"):
@@ -890,6 +1175,10 @@ def main():
         sys.exit(cmd_post_rewrite(args))
     elif args.command == "show":
         sys.exit(cmd_show(args))
+    elif args.command == "export-log":
+        sys.exit(cmd_export_log(args))
+    elif args.command == "import-log":
+        sys.exit(cmd_import_log(args))
     else:
         parser.print_help()
         sys.exit(1)

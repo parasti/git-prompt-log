@@ -86,6 +86,25 @@ git log -n 1
 git prompt-note show HEAD
 ```
 
+### 5. Export for Pull Requests
+When a feature branch is ready for review, package the accumulated prompt notes into a reviewable log commit:
+
+```bash
+git prompt-note export-log --commit
+```
+
+This writes `prompts/YYYY_MM_DD_HHMMSS_<slug>.md` and commits it to the branch. Reviewers see the prompt log in the PR diff.
+
+### 6. Upstream Re-hydration (Maintainer)
+When the PR lands on `main` (even if squashed or rebased in GitHub's web UI), re-hydrate the notes on `main`:
+
+```bash
+git prompt-note import-log prompts/YYYY_MM_DD_feature.md
+git push origin "refs/notes/*"
+```
+
+The tool matches commits by exact hash or commit subject, attaching the prompt provenance back to the landed commit in `refs/notes/commits`.
+
 ---
 
 ## Note Schema

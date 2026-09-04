@@ -314,5 +314,115 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         self.assertIn("agy-prompt-note", skill_file.read_text(encoding="utf-8"))
 
 
+class TestExportAndImportLog(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.repo_dir = Path(self.temp_dir.name)
+        subprocess.run(["git", "init"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repo_dir, check=True)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _commit(self, filename: str, content: str, msg: str) -> str:
+        fpath = self.repo_dir / filename
+        fpath.write_text(content)
+        subprocess.run(["git", "add", filename], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", msg], cwd=self.repo_dir, check=True, capture_output=True)
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+
+    def test_export_and_import_exact(self):
+        sha = self._commit("file1.txt", "v1", "feat: Feature one")
+        note = gpn.SessionNote(
+            session_id="session-export-1",
+            harness="Antigravity CLI 1.1.25",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:00:00 UTC",
+            prompts=[gpn.PromptEntry("2026-09-04 00:59:00", "Build feature one")],
+        )
+        gpn.write_note_content(sha, note.format(), repo_root=self.repo_dir)
+
+        # Export log
+        out_file = self.repo_dir / "prompts" / "test_export.md"
+        script_path = Path(gpn.__file__).resolve()
+        res = subprocess.run(
+            ["python3", str(script_path), "export-log", "--output", str(out_file), "--range", "HEAD~1..HEAD"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+        self.assertTrue(out_file.exists())
+        log_content = out_file.read_text(encoding="utf-8")
+        self.assertIn("# Prompt Log", log_content)
+        self.assertIn("Build feature one", log_content)
+        self.assertIn("<!-- git-prompt-note:metadata", log_content)
+
+        # Remove note
+        subprocess.run(["git", "notes", "remove", sha], cwd=self.repo_dir, check=True, capture_output=True)
+        self.assertIsNone(gpn.get_note_content(sha, repo_root=self.repo_dir))
+
+        # Import log back
+        res_import = subprocess.run(
+            ["python3", str(script_path), "import-log", str(out_file)],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_import.returncode, 0)
+
+        # Note restored
+        restored = gpn.get_note_content(sha, repo_root=self.repo_dir)
+        self.assertIsNotNone(restored)
+        notes = gpn.parse_notes(restored)
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0].session_id, "session-export-1")
+        self.assertEqual(notes[0].prompts[0].text, "Build feature one")
+
+    def test_import_reconciles_squashed_commit(self):
+        sha1 = self._commit("file1.txt", "v1", "feat: Target Feature")
+        note = gpn.SessionNote(
+            session_id="session-squash-import",
+            harness="Antigravity CLI 1.1.25",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:00:00 UTC",
+            prompts=[gpn.PromptEntry("2026-09-04 00:59:00", "Steer feature")],
+        )
+        gpn.write_note_content(sha1, note.format(), repo_root=self.repo_dir)
+
+        out_file = self.repo_dir / "prompts" / "feature.md"
+        script_path = Path(gpn.__file__).resolve()
+        subprocess.run(
+            ["python3", str(script_path), "export-log", "--output", str(out_file)],
+            cwd=self.repo_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Simulate commit amendment with different hash but same subject
+        subprocess.run(["git", "notes", "remove", sha1], cwd=self.repo_dir, check=True, capture_output=True)
+        f = self.repo_dir / "file2.txt"
+        f.write_text("v2")
+        subprocess.run(["git", "add", "."], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "--amend", "-m", "feat: Target Feature"], cwd=self.repo_dir, check=True, capture_output=True)
+        sha_squashed = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+        self.assertNotEqual(sha1, sha_squashed)
+
+        # Import log should reconcile sha_squashed by subject match
+        res_import = subprocess.run(
+            ["python3", str(script_path), "import-log", str(out_file)],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_import.returncode, 0)
+        reconciled = gpn.get_note_content(sha_squashed, repo_root=self.repo_dir)
+        self.assertIsNotNone(reconciled)
+        notes = gpn.parse_notes(reconciled)
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0].prompts[0].text, "Steer feature")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,8 +2,11 @@
 name: agy-prompt-note
 description: >-
   Attaches AI session metadata, model/harness provenance, and human steering prompts
-  directly to git notes on commits, providing deterministic prompt deduplication
-  and session merging across git rebase, squash, and amend.
+  directly to git notes on commits, provides deterministic prompt deduplication
+  across git rebase/squash, exports branch prompt logs for pull requests, and
+  re-hydrates prompt notes from merged logs. Use when authoring commits, recording
+  prompt notes, finalizing a feature branch, preparing a pull request, or landing
+  PR prompt logs.
 ---
 
 # Antigravity Git Prompt Note Skill
@@ -18,8 +21,9 @@ Traditional prompt tracking either pollutes the git tree with markdown files (`p
 
 `agy-prompt-note` records the essential provenance directly onto git commits without altering commit hashes or tree objects:
 1. **Prompts over Transcripts:** Only the human steering prompts that set the course are stored; the patch itself already contains the code.
-2. **Zero Tree Pollution:** Git notes live in `refs/notes/commits` outside the commit DAG.
+2. **Zero Tree Pollution:** Git notes live in `refs/notes/commits` outside the commit DAG during active development.
 3. **Deterministic Rewrites:** Intelligent post-rewrite handling preserves, deduplicates, and merges session notes across `git rebase -i`, `squash`, `fixup`, and `commit --amend`.
+4. **Hybrid PR Workflow:** At the PR boundary, accumulated notes on the branch can be exported to a single reviewable markdown commit (`git prompt-note export-log --commit`), and re-hydrated back into upstream notes upon landing (`git prompt-note import-log <file>`).
 
 ---
 
@@ -60,50 +64,70 @@ Assistant-Prompts:
 
 ---
 
-## Architecture & Separation of Concerns
+## Agent Runbook
 
-1. **Recording is Agent-Driven (Strict Causality):**
-   - A commit only receives a prompt note if it was authored or steered by an agent.
-   - When the AI agent creates a commit, it records the note:
-     `python3 .agents/skills/agy-prompt-note/scripts/git_prompt_note.py record`
-   - Manual human commits authored in your terminal are **never** hijacked by background sessions.
-   - If the user explicitly wants to attach the active session note to a commit:
-     `python3 .agents/skills/agy-prompt-note/scripts/git_prompt_note.py record`
+### 1. After Authoring a Commit (Local Recording)
+Whenever an agent creates or amends a commit on behalf of the user, record the steering prompts on `HEAD`:
 
-2. **Rewriting is Git-Driven (`post-rewrite` Hook):**
-   - The installed `post-rewrite` hook runs automatically on `git rebase`, `squash`, `fixup`, and `commit --amend`.
-   - **Completely safe:** It only touches commits that *already* possess a prompt note. Commits authored without notes remain completely untouched.
+```bash
+git prompt-note record
+```
+
+To view the recorded note on a commit:
+```bash
+git prompt-note show HEAD
+```
+
+### 2. Preparing a Feature Branch for PR (Export Log)
+When a feature branch is complete and ready for pull request review, export the branch's accumulated prompt notes into a reviewable log commit:
+
+```bash
+# Automatically detects branch range (e.g. main..HEAD), writes prompts/YYYY_MM_DD_<slug>.md, and commits it
+git prompt-note export-log --commit
+```
+
+The exported file contains:
+- Human-readable session metadata and steering prompts for reviewers in the web PR diff.
+- An embedded metadata block that enables exact upstream re-hydration.
+
+### 3. Maintainer / Post-Merge (Import Log)
+After a PR is merged (even if squashed or rebased via GitHub's web UI), the maintainer re-hydrates the notes onto the landed commits on `main`:
+
+```bash
+git prompt-note import-log prompts/2026_09_04_feature.md
+git push origin "refs/notes/*"
+```
 
 ---
 
-## Commands
-
-### One-Time Setup (Enables Safe History Rewriting)
+## CLI Reference
 
 ```bash
-# Installs post-rewrite hook and configures git notes rewrite settings
-python3 .agents/skills/agy-prompt-note/scripts/git_prompt_note.py install-hook
-```
+# Initialize in a repository (hooks, local git config, local skill)
+git prompt-note init
 
-### Agent / Manual Recording
-
-```bash
 # Record prompt note on HEAD (or --commit <hash>)
-python3 .agents/skills/agy-prompt-note/scripts/git_prompt_note.py record
+git prompt-note record
 
-# Preview prompt note without writing
-python3 .agents/skills/agy-prompt-note/scripts/git_prompt_note.py record --dry-run
+# Preview prompt note without writing to git
+git prompt-note record --dry-run
 
-# Show prompt note on HEAD
-python3 .agents/skills/agy-prompt-note/scripts/git_prompt_note.py show
+# Show prompt note on a commit
+git prompt-note show [commit]
+
+# Export branch prompt notes to a markdown log file
+git prompt-note export-log [--range <base>..HEAD] [--output <file>] [--commit]
+
+# Import prompt notes from a log file into git notes
+git prompt-note import-log <file> [--commit <hash>]
 ```
 
 ---
 
 ## Rebase and Squash Handling
 
-When Git rewrites commits (`rebase`, `commit --amend`, `squash`, `fixup`), the installed `.git/hooks/post-rewrite` hook invokes `git_prompt_note.py post-rewrite`:
+When Git rewrites commits (`rebase`, `commit --amend`, `squash`, `fixup`), the installed `.git/hooks/post-rewrite` hook invokes `git prompt-note post-rewrite`:
 
 1. **Same-Session Squash:** Prompts from all squashed commits are unioned, deduplicated, and sorted chronologically into a single session entry with the latest `Recorded` timestamp.
 2. **Cross-Session Squash:** Multiple session entries are preserved in chronological order separated by `---`.
-3. **1-to-1 Rebase / Amend:** The note is transferred to the new commit hash, appending any newly executed steering prompts if amended within an active session.
+3. **1-to-1 Rebase / Amend:** The note is transferred to the new commit hash, appending newly executed steering prompts if amended within an active session.
