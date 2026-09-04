@@ -74,10 +74,10 @@ git prompt-log record
 # Preview without writing to git notes
 git prompt-log record --dry-run
 
-# Exclude prompts matching a regex pattern (Caveat: Prompt will come back on subsequent commits from the same session; use `git prompt-log session drop` for persistent exclusion)
+# Exclude prompts matching a regex pattern
 git prompt-log record --drop "temporary scratch"
 
-# Drop the last N prompts before recording (Caveat: Dropped prompts will come back on subsequent commits from the same session)
+# Drop the last N prompts before recording
 git prompt-log record --drop-last 1
 
 # Record a prompt manually without transcript (human or external script)
@@ -89,6 +89,8 @@ echo "Refactor caching layer" | git prompt-log record --stdin
 # Record with explicit harness and model attribution
 git prompt-log record -m "System architecture design" --harness "Human Dev" --model "Manual"
 ```
+
+Dropping prompts via `record --drop` or `--drop-last` only affects that specific commit's note. Because the session transcript remains untouched, omitted prompts will return on subsequent commits from the same session unless excluded with `git prompt-log session drop`.
 
 ### Supported Harnesses
 `git-prompt-log` supports multiple assistant harnesses (`antigravity`, `claude`, `manual`):
@@ -114,13 +116,15 @@ git prompt-log edit HEAD
 
 ### Session Prompt Management (Exclusions & Retraction)
 When asked how to inspect, exclude, or retract specific prompts:
-* **Session CLI:** Use `git prompt-log session` to manage prompt inclusion per session:
+* **Session CLI (Persistent):** Use `git prompt-log session` to manage prompt inclusion across an active session:
   * `git prompt-log session`: List all prompts in the active session with 1-based index numbers.
   * `git prompt-log session drop <index_or_pattern>`: Mark prompt #N or matching pattern as excluded for this session (automatically updates HEAD's prompt note).
   * `git prompt-log session undrop <index_or_pattern>`: Restore a previously excluded prompt.
   * `git prompt-log session clear`: Clear all exclusions for the session.
-* **Manual recording drop:** Run `git prompt-log record --drop "<pattern>"` (optionally targeting a specific commit with `--commit <SHA>`). *(Caveat: The prompt will come back on subsequent commits from the same session if edited away in this way; use `git prompt-log session drop` for persistent session exclusion).*
-* **Manual note edit:** Run `git prompt-log edit HEAD` (or `<SHA>`) to edit notes directly in `$EDITOR`.
+* **Per-Commit Drops & Edits (Single Commit Only):**
+  * `git prompt-log record --drop "<pattern>"`: Exclude matching prompts for this commit note only.
+  * `git prompt-log edit HEAD`: Edit a recorded note interactively in `$EDITOR`.
+  Modifying notes per-commit does not alter the underlying session transcript; omitted prompts will return on subsequent commits made in the same session unless excluded with `git prompt-log session drop`.
 
 ### Sharing Notes (Export & Import Only)
 Prompt notes must never be pushed directly via `refs/notes/*`. Prompt notes are shared across remotes exclusively via markdown logs:
