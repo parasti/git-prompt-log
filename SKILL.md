@@ -112,31 +112,14 @@ When asked to edit or modify a recorded note directly:
 git prompt-log edit HEAD
 ```
 
-### Always-Skip Patterns (Git Config)
-To permanently and automatically skip routine recurring prompts (e.g. routine `"Commit"` commands) across all recordings without needing manual prefixes:
-```bash
-# Add an exclusion pattern for the current repository
-git config --add prompt-log.exclude "^(?i)commit$"
-
-# Or configure globally across all repositories
-git config --global --add prompt-log.exclude "^(?i)commit$"
-```
-Any prompt matching any configured `prompt-log.exclude` regex will be automatically omitted from prompt notes by both the post-commit hook and `git prompt-log record`.
-
-### Accidental Prompt Retraction & Session Exclusions
+### Session Prompt Management (Exclusions & Retraction)
 When asked how to prevent, retract, or exclude specific prompts:
-* **Tag on input:** Prefix prompts with `[ignore]`, `[skip]`, `[wrong-session]`, or `[scratch]` to exclude them from being recorded.
-* **Targeted in-chat retraction:** At ANY point in the conversation, retract an earlier prompt:
-  * `[retract "Commit"]` or `[drop-prompt "Commit"]`: Drops earlier prompts matching `"Commit"`.
-  * `[retract #2]` or `[drop-prompt 2]`: Drops prompt #2 of the current session.
-  * `[retract "Commit"] Implement this instead...`: Drops earlier prompt and steers in the same turn.
-* **Retract immediately preceding prompt:** Send `[ignore-last]` (or `[retract]`, `[wrong-session]`).
-* **Retract multiple recent prompts:** Send `[ignore-last N]` (e.g. `[ignore-last 2]`) or `[ignore-all]`.
-* **Session CLI management (No JSONL editing required):**
-  * `git prompt-log session`: List all prompts in active session with 1-based index numbers.
+* **Out-of-band session CLI (Recommended):** Never use prompt prefix tags (e.g. `[ignore]`, `[skip]`, `[retract]`) in chat messages, as they alter conversational context and can degrade LLM steering. Use `git prompt-log session` instead:
+  * `git prompt-log session`: List all prompts in the active session with 1-based index numbers.
   * `git prompt-log session drop <index_or_pattern>`: Mark prompt #N or matching pattern as excluded for this session (automatically updates HEAD's prompt note).
   * `git prompt-log session undrop <index_or_pattern>`: Restore previously excluded prompt.
-* **Retroactive drop on existing notes:** Run `git prompt-log record --drop "<pattern>"` (optionally targeting a specific commit with `--commit <SHA>`).
+  * `git prompt-log session clear`: Clear all exclusions for the session.
+* **Manual recording drop:** Run `git prompt-log record --drop "<pattern>"` (optionally targeting a specific commit with `--commit <SHA>`).
 * **Manual note edit:** Run `git prompt-log edit HEAD` (or `<SHA>`) to edit notes directly in `$EDITOR`.
 
 ### Sharing Notes (Export & Import Only)

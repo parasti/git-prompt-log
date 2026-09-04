@@ -621,78 +621,24 @@ class TestPromptExclusionAndRetraction(unittest.TestCase):
                 }
                 f.write(json.dumps(step) + "\n")
 
-    def test_ignore_prefix_excluded(self):
+    def test_prompts_with_bracketed_text_preserved_verbatim(self):
         self._write_transcript([
             "First valid prompt",
-            "[ignore] Accidental prompt in wrong window",
-            "[wrong-session] Meant for another project",
-            "[skip] Temporary check",
-            "(wrong session: oops)",
+            "[ignore] What was that command again?",
+            "[skip] Run tests",
+            "[retract] Fix camera",
             "Second valid prompt",
         ])
         data = gpn.parse_session_transcript(self.transcript_file)
         self.assertIsNotNone(data)
         prompts = [p.text for p in data["prompts"]]
-        self.assertEqual(prompts, ["First valid prompt", "Second valid prompt"])
-
-    def test_retract_last_prompt(self):
-        self._write_transcript([
+        self.assertEqual(prompts, [
             "First valid prompt",
-            "Oops wrong window prompt",
-            "[ignore-last]",
+            "[ignore] What was that command again?",
+            "[skip] Run tests",
+            "[retract] Fix camera",
             "Second valid prompt",
         ])
-        data = gpn.parse_session_transcript(self.transcript_file)
-        self.assertIsNotNone(data)
-        prompts = [p.text for p in data["prompts"]]
-        self.assertEqual(prompts, ["First valid prompt", "Second valid prompt"])
-
-    def test_retract_multiple_prompts(self):
-        self._write_transcript([
-            "First valid prompt",
-            "Accident 1",
-            "Accident 2",
-            "[ignore-last 2]",
-            "Second valid prompt",
-        ])
-        data = gpn.parse_session_transcript(self.transcript_file)
-        self.assertIsNotNone(data)
-        prompts = [p.text for p in data["prompts"]]
-        self.assertEqual(prompts, ["First valid prompt", "Second valid prompt"])
-
-    def test_standalone_wrong_session_retracts_last(self):
-        self._write_transcript([
-            "First valid prompt",
-            "Accidental prompt for other repo",
-            "[wrong-session]",
-            "Second valid prompt",
-        ])
-        data = gpn.parse_session_transcript(self.transcript_file)
-        self.assertIsNotNone(data)
-        prompts = [p.text for p in data["prompts"]]
-        self.assertEqual(prompts, ["First valid prompt", "Second valid prompt"])
-
-    def test_retract_and_steer_in_one_turn(self):
-        self._write_transcript([
-            "Accidental prompt",
-            "[ignore-last] Real intended prompt for this repository",
-        ])
-        data = gpn.parse_session_transcript(self.transcript_file)
-        self.assertIsNotNone(data)
-        prompts = [p.text for p in data["prompts"]]
-        self.assertEqual(prompts, ["Real intended prompt for this repository"])
-
-    def test_ignore_all_resets_prompts(self):
-        self._write_transcript([
-            "Accident 1",
-            "Accident 2",
-            "[ignore-all]",
-            "Fresh prompt",
-        ])
-        data = gpn.parse_session_transcript(self.transcript_file)
-        self.assertIsNotNone(data)
-        prompts = [p.text for p in data["prompts"]]
-        self.assertEqual(prompts, ["Fresh prompt"])
 
     def test_normal_english_sentences_preserved(self):
         self._write_transcript([
@@ -703,64 +649,6 @@ class TestPromptExclusionAndRetraction(unittest.TestCase):
         prompts = [p.text for p in data["prompts"]]
         self.assertEqual(prompts, ["Ignore previous compiler warnings and proceed with build"])
 
-    def test_custom_exclusion_patterns(self):
-        self._write_transcript([
-            "Implement initial parser",
-            "Commit",
-            "Refactor AST node types",
-            "commit changes please",
-            "commit",
-        ])
-        # With custom pattern "^(?i)commit$" only standalone "Commit" / "commit" are ignored
-        data = gpn.parse_session_transcript(self.transcript_file, custom_patterns=[r"^(?i)commit$"])
-        self.assertIsNotNone(data)
-        prompts = [p.text for p in data["prompts"]]
-        self.assertEqual(prompts, [
-            "Implement initial parser",
-            "Refactor AST node types",
-            "commit changes please",
-        ])
-
-        # is_ignored_prompt check
-        self.assertTrue(gpn.is_ignored_prompt("Commit", [r"^(?i)commit$"]))
-        self.assertTrue(gpn.is_ignored_prompt("commit", [r"^(?i)commit$"]))
-        self.assertFalse(gpn.is_ignored_prompt("Fix commit parser bug", [r"^(?i)commit$"]))
-
-    def test_targeted_retraction_by_pattern(self):
-        self._write_transcript([
-            "First valid prompt",
-            "Commit",
-            "Second valid prompt",
-            "[retract \"Commit\"]",
-            "Third valid prompt",
-        ])
-        data = gpn.parse_session_transcript(self.transcript_file)
-        self.assertIsNotNone(data)
-        prompts = [p.text for p in data["prompts"]]
-        self.assertEqual(prompts, ["First valid prompt", "Second valid prompt", "Third valid prompt"])
-
-    def test_targeted_retraction_by_index(self):
-        self._write_transcript([
-            "First valid prompt",
-            "Accidental prompt at index 2",
-            "Third valid prompt",
-            "[drop-prompt 2]",
-        ])
-        data = gpn.parse_session_transcript(self.transcript_file)
-        self.assertIsNotNone(data)
-        prompts = [p.text for p in data["prompts"]]
-        self.assertEqual(prompts, ["First valid prompt", "Third valid prompt"])
-
-    def test_targeted_retraction_and_steer(self):
-        self._write_transcript([
-            "First valid prompt",
-            "Accidental query",
-            "[retract 'Accidental query'] Next intended feature",
-        ])
-        data = gpn.parse_session_transcript(self.transcript_file)
-        self.assertIsNotNone(data)
-        prompts = [p.text for p in data["prompts"]]
-        self.assertEqual(prompts, ["First valid prompt", "Next intended feature"])
 
 
 class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
@@ -1084,52 +972,27 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         self.assertNotIn("\033[33m", out_no_color)
         self.assertNotIn("\033[36m", out_no_color)
 
-    def test_always_skip_configured_exclude_pattern_and_retroactive_drop(self):
-        # 1. Configure git exclude pattern
-        subprocess.run(["git", "config", "--add", "prompt-log.exclude", r"^(?i)commit$"], cwd=self.repo_dir, check=True)
-        patterns = gpn.get_configured_exclude_patterns(self.repo_dir)
-        self.assertIn(r"^(?i)commit$", patterns)
-
-        # 2. Append real prompt followed by routine "Commit" prompt
+    def test_retroactive_drop_on_record(self):
+        # 1. Author initial commit with prompts
         self._append_prompt("Implement user authentication", "2026-09-04T10:00:00Z")
         self._append_prompt("Commit", "2026-09-04T10:01:00Z")
         sha1 = self._commit("auth.py", "def login(): pass", "feat: Add login")
 
-        # 3. Post-commit hook recorded note: verify "Commit" was automatically skipped
+        # 2. Both prompts are recorded (no automatic prefix or git config exclusion)
         raw1 = gpn.get_note_content(sha1, repo_root=self.repo_dir)
-        self.assertIsNotNone(raw1)
         notes1 = gpn.parse_notes(raw1)
-        self.assertEqual(len(notes1), 1)
-        prompts1 = [p.text for p in notes1[0].prompts]
-        self.assertEqual(prompts1, ["Implement user authentication"])
+        self.assertEqual(len(notes1[0].prompts), 2)
 
-        # 4. Append next prompt followed by another routine "commit"
-        self._append_prompt("Add unit tests for auth", "2026-09-04T10:05:00Z")
-        self._append_prompt("commit", "2026-09-04T10:06:00Z")
-        sha2 = self._commit("test_auth.py", "def test_login(): pass", "test: Add auth tests")
-
-        raw2 = gpn.get_note_content(sha2, repo_root=self.repo_dir)
-        self.assertIsNotNone(raw2)
-        notes2 = gpn.parse_notes(raw2)
-        prompts2 = [p.text for p in notes2[0].prompts]
-        # Cumulative history contains both feature prompts, neither "Commit" prompt
-        self.assertEqual(prompts2, ["Add unit tests for auth", "Implement user authentication"])
-
-        # 5. Test CLI retroactive drop on existing commit notes:
-        # Purge "Add unit tests for auth" from sha2 note using git prompt-log record --drop
-        cmd = ["python3", str(Path(gpn.__file__).resolve()), "record", "--commit", sha2, "--drop", r"Add unit tests"]
+        # 3. Test CLI retroactive drop on existing commit notes:
+        # Purge "Commit" from sha1 note using git prompt-log record --drop
+        cmd = ["python3", str(Path(gpn.__file__).resolve()), "record", "--commit", sha1, "--drop", r"^(?i)commit$"]
         subprocess.run(cmd, cwd=self.repo_dir, check=True, env=self.env)
 
-        raw2_updated = gpn.get_note_content(sha2, repo_root=self.repo_dir)
-        notes2_updated = gpn.parse_notes(raw2_updated)
-        prompts2_updated = [p.text for p in notes2_updated[0].prompts]
-        self.assertEqual(prompts2_updated, ["Implement user authentication"])
+        raw1_updated = gpn.get_note_content(sha1, repo_root=self.repo_dir)
+        notes1_updated = gpn.parse_notes(raw1_updated)
+        prompts1_updated = [p.text for p in notes1_updated[0].prompts]
+        self.assertEqual(prompts1_updated, ["Implement user authentication"])
 
-        # 6. Test uninstall-hook --all cleans prompt-log.exclude
-        uninstall_cmd = ["python3", str(Path(gpn.__file__).resolve()), "uninstall-hook", "--all"]
-        subprocess.run(uninstall_cmd, cwd=self.repo_dir, check=True)
-        patterns_after = gpn.get_configured_exclude_patterns(self.repo_dir)
-        self.assertEqual(patterns_after, [])
 
     def test_session_drop_and_undrop_cli(self):
         # 1. Author initial commit with two prompts
@@ -1246,7 +1109,7 @@ class TestIngestionAdapters(unittest.TestCase):
         lines = [
             json.dumps({"type": "user", "message": {"content": "Build ingestion adapter"}, "timestamp": "2026-09-04T12:00:00Z"}),
             json.dumps({"type": "assistant", "message": {"model": "claude-3-7-sonnet"}}),
-            json.dumps({"type": "user", "message": {"content": "[ignore] accidental prompt"}, "timestamp": "2026-09-04T12:01:00Z"}),
+            json.dumps({"type": "user", "message": {"content": "Implement core handler"}, "timestamp": "2026-09-04T12:01:00Z"}),
             json.dumps({"type": "user", "message": {"content": "Add unit tests"}, "timestamp": "2026-09-04T12:02:00Z"}),
         ]
         transcript.write_text("\n".join(lines), encoding="utf-8")
@@ -1256,7 +1119,7 @@ class TestIngestionAdapters(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["detected_model"], "claude-3-7-sonnet")
         prompts = [p.text for p in parsed["prompts"]]
-        self.assertEqual(prompts, ["Build ingestion adapter", "Add unit tests"])
+        self.assertEqual(prompts, ["Build ingestion adapter", "Implement core handler", "Add unit tests"])
 
     def test_claude_adapter_parsing_json_array(self):
         transcript = self.work_dir / "session.json"

@@ -368,19 +368,6 @@ def remove_note_content(commit_hash: str, ref: str = DEFAULT_NOTES_REF, repo_roo
     return code == 0
 
 
-def get_configured_exclude_patterns(repo_root: Optional[Path] = None) -> List[str]:
-    """Retrieves all prompt-log.exclude (and legacy prompt-note.exclude) regex patterns from git config."""
-    patterns: List[str] = []
-    for key in ("prompt-log.exclude", "prompt-note.exclude"):
-        code, out, _ = run_git(["config", "--get-all", key], repo_root=repo_root)
-        if code == 0 and out:
-            for line in out.splitlines():
-                line = line.strip()
-                if line and line not in patterns:
-                    patterns.append(line)
-    return patterns
-
-
 def _safe_search(pattern: str, text: str) -> bool:
     """Safely executes regex search against text, handling inline flags and invalid patterns."""
     if not pattern:
@@ -460,58 +447,6 @@ def save_session_excludes(session_id: str, data: Dict[str, Any], repo_root: Opti
             pass
 
 
-IGNORE_PREFIX_RE = re.compile(
-    r"^(?:\[\s*(?:ignore|skip|skip-note|no-note|no-prompt|scratch|wrong-session|wrong session|wrong-window|wrong window|oops|nolog)\s*[:\]]|"
-    r"\(\s*(?:ignore|skip|skip-note|no-note|no-prompt|scratch|wrong-session|wrong session|wrong-window|wrong window|oops|nolog)\s*[:\)]|"
-    r"/\s*(?:ignore|skip|wrong-session|wrong-window|no-note)\b|"
-    r"//\s*ignore|"
-    r"#\s*ignore|"
-    r"<!--\s*ignore\s*-->)",
-    re.IGNORECASE,
-)
-
-IGNORE_LAST_RE = re.compile(
-    r"^(?:\[\s*(?:ignore|drop|scratch|retract)-(?:last|prev)(?:\s+(\d+))?\s*\]|"
-    r"\[\s*retract(?:\s+(\d+))?\s*\]|"
-    r"/\s*(?:ignore|drop)-(?:last|prev)(?:\s+(\d+))?\b)"
-    r"(?:\s*(.*))?$",
-    re.IGNORECASE | re.DOTALL,
-)
-
-IGNORE_ALL_RE = re.compile(
-    r"^(?:\[\s*(?:ignore|drop)-(?:all|session)\s*\]|"
-    r"/\s*(?:ignore|drop)-(?:all|session)\b)"
-    r"(?:\s*(.*))?$",
-    re.IGNORECASE | re.DOTALL,
-)
-
-STANDALONE_RETRACT_RE = re.compile(
-    r"^\[\s*(?:wrong-session|wrong session|wrong-window|wrong window|oops|cancel|retract)\s*\]$",
-    re.IGNORECASE,
-)
-
-IGNORE_TARGET_RE = re.compile(
-    r"^(?:\[\s*(?:retract|drop|ignore|scratch)(?:-prompt|-matching)?\s+(?:\"([^\"]+)\"|\x27([^\x27]+)\x27|/([^/]+)/|#(\d+))\s*\]|"
-    r"\[\s*(?:retract-prompt|drop-prompt|ignore-prompt)\s+(\d+)\s*\]|"
-    r"/\s*(?:retract|drop|ignore)(?:-prompt|-matching)?\s+(?:\"([^\"]+)\"|\x27([^\x27]+)\x27|/([^/]+)/|#?(\d+))\b|"
-    r"/\s*(?:retract|drop|ignore)(?:-prompt|-matching)?\s+(?:\"([^\"]+)\"|\x27([^\x27]+)\x27|/([^/]+)/))"
-    r"(?:\s*(.*))?$",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-def is_ignored_prompt(text: str, custom_patterns: Optional[List[str]] = None) -> bool:
-    """Returns True if the prompt begins with an ignore/wrong-session marker or matches custom exclusion patterns."""
-    clean = text.strip()
-    if bool(IGNORE_PREFIX_RE.match(clean)):
-        return True
-    if custom_patterns:
-        for pat in custom_patterns:
-            if _safe_search(pat, clean):
-                return True
-    return False
-
-
 def clean_user_prompt(content: str) -> str:
     """Strips protocol XML envelopes from user prompts."""
     if not content:
@@ -536,76 +471,12 @@ def format_utc(dt_str: str) -> str:
         return dt_str
 
 
-def process_prompt_turns(
-    raw_turns: List[Tuple[str, str]],
-    custom_patterns: Optional[List[str]] = None,
-) -> List[PromptEntry]:
-    """Processes sequential prompt turns, applying in-chat retraction, resets, and exclusions."""
+def process_prompt_turns(raw_turns: List[Tuple[str, str]]) -> List[PromptEntry]:
+    """Converts sequential raw prompt turns into PromptEntry objects."""
     prompts: List[PromptEntry] = []
-
     for ts, clean in raw_turns:
-        if not clean:
-            continue
-
-        # 1. Whole-session reset: [ignore-all]
-        m_all = IGNORE_ALL_RE.match(clean)
-        if m_all:
-            prompts.clear()
-            remaining = m_all.group(1).strip() if m_all.group(1) else ""
-            if remaining and not is_ignored_prompt(remaining, custom_patterns=custom_patterns):
-                prompts.append(PromptEntry(timestamp=ts, text=remaining))
-            continue
-
-        # 2. Targeted prompt retraction: [retract "Commit"], [drop-prompt 2], [retract #2]
-        m_target = IGNORE_TARGET_RE.match(clean)
-        if m_target:
-            t_str = (
-                m_target.group(1)
-                or m_target.group(2)
-                or m_target.group(3)
-                or m_target.group(6)
-                or m_target.group(7)
-                or m_target.group(8)
-                or m_target.group(10)
-                or m_target.group(11)
-                or m_target.group(12)
-            )
-            t_idx = m_target.group(4) or m_target.group(5) or m_target.group(9)
-            if t_idx:
-                idx = int(t_idx) - 1
-                if 0 <= idx < len(prompts):
-                    prompts.pop(idx)
-            elif t_str:
-                prompts = [p for p in prompts if not _safe_search(t_str, p.text)]
-            remaining = m_target.group(13).strip() if m_target.group(13) else ""
-            if remaining and not is_ignored_prompt(remaining, custom_patterns=custom_patterns):
-                prompts.append(PromptEntry(timestamp=ts, text=remaining))
-            continue
-
-        # 3. Retract previous N prompts: [ignore-last], [ignore-prev 2], [retract]
-        m_last = IGNORE_LAST_RE.match(clean)
-        if m_last:
-            n_str = m_last.group(1) or m_last.group(2) or m_last.group(3)
-            n = int(n_str) if n_str else 1
-            for _ in range(min(n, len(prompts))):
-                prompts.pop()
-            remaining = m_last.group(4).strip() if m_last.group(4) else ""
-            if remaining and not is_ignored_prompt(remaining, custom_patterns=custom_patterns):
-                prompts.append(PromptEntry(timestamp=ts, text=remaining))
-            continue
-
-        # 4. Standalone oops/wrong-session marker retracting previous prompt: [wrong-session]
-        if STANDALONE_RETRACT_RE.match(clean):
-            if prompts:
-                prompts.pop()
-            continue
-
-        # 5. Prompt explicitly marked to ignore or matching custom exclusion pattern:
-        if is_ignored_prompt(clean, custom_patterns=custom_patterns):
-            continue
-
-        prompts.append(PromptEntry(timestamp=ts, text=clean))
-
+        if clean:
+            prompts.append(PromptEntry(timestamp=ts, text=clean))
     return prompts
 
 
@@ -613,13 +484,12 @@ def apply_session_excludes_filter(
     session_id: str,
     prompts: List[PromptEntry],
     repo_root: Optional[Path] = None,
-    custom_patterns: Optional[List[str]] = None,
 ) -> List[PromptEntry]:
     """Filters prompts according to session-specific exclusions and patterns."""
     session_excludes = load_session_excludes(session_id, repo_root=repo_root)
     if not session_excludes:
         return prompts
-    pat_list = list(custom_patterns or []) + list(session_excludes.get("patterns", []))
+    pat_list = list(session_excludes.get("patterns", []))
     ts_list = set(session_excludes.get("timestamps", []))
     idx_set = set(session_excludes.get("indices", []))
 
@@ -781,10 +651,10 @@ class AntigravityAdapter(BaseIngestionAdapter):
                 if clean:
                     raw_turns.append((format_utc(created_at), clean))
 
-        prompts = process_prompt_turns(raw_turns, custom_patterns=custom_patterns)
+        prompts = process_prompt_turns(raw_turns)
         cid = transcript_path.parent.parent.parent.name
         if apply_session_excludes:
-            prompts = apply_session_excludes_filter(cid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
+            prompts = apply_session_excludes_filter(cid, prompts, repo_root=repo_root)
 
         harness, model = self.get_agent_identity(detected_model)
         return {
@@ -808,9 +678,6 @@ class AntigravityAdapter(BaseIngestionAdapter):
             return None
 
         repo = repo_root or get_repo_root()
-        if custom_patterns is None:
-            custom_patterns = get_configured_exclude_patterns(repo_root=repo)
-
         effective_sid = session_id or self.detect_session_id(repo_root=repo)
         if effective_sid:
             t_path = brain / effective_sid / ".system_generated" / "logs" / "transcript.jsonl"
@@ -983,9 +850,9 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
         if not raw_turns and not detected_model:
             return None
 
-        prompts = process_prompt_turns(raw_turns, custom_patterns=custom_patterns)
+        prompts = process_prompt_turns(raw_turns)
         if apply_session_excludes:
-            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
+            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root)
 
         harness, model = self.get_agent_identity(detected_model)
         return {
@@ -1005,8 +872,6 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
         extra_options: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         repo = repo_root or get_repo_root()
-        if custom_patterns is None:
-            custom_patterns = get_configured_exclude_patterns(repo_root=repo)
 
         env_transcript = os.environ.get("CLAUDE_TRANSCRIPT_PATH")
         if env_transcript and Path(env_transcript).exists():
@@ -1110,13 +975,13 @@ class ManualAdapter(BaseIngestionAdapter):
             return None
 
         now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        prompts = process_prompt_turns([(now_utc, msg.strip())], custom_patterns=custom_patterns)
+        prompts = process_prompt_turns([(now_utc, msg.strip())])
         if not prompts:
             return None
 
         sid = session_id or f"manual-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
         if apply_session_excludes:
-            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
+            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root)
 
         return {
             "session_id": sid,
@@ -1413,11 +1278,9 @@ def cmd_record(args: argparse.Namespace) -> int:
     _, date_out, _ = run_git(["show", "-s", "--format=%cI", commit_hash], repo_root=repo_root)
     commit_date_utc = format_utc(date_out)
 
-    configured_excludes = get_configured_exclude_patterns(repo_root=repo_root)
-    exclude_patterns: List[str] = list(configured_excludes)
+    exclude_patterns: List[str] = []
     if getattr(args, "exclude", None):
-        if args.exclude not in exclude_patterns:
-            exclude_patterns.append(args.exclude)
+        exclude_patterns.append(args.exclude)
 
     message_input = getattr(args, "message", None)
     if getattr(args, "stdin", False):
@@ -1445,7 +1308,6 @@ def cmd_record(args: argparse.Namespace) -> int:
         adapter_name=adapter_name,
         session_id=args.session,
         repo_root=repo_root,
-        custom_patterns=exclude_patterns,
         extra_options=extra_options,
     )
 
@@ -2364,44 +2226,38 @@ git prompt-log import-log prompts/2026_09_04_feature.md
 
 ---
 
-## Accidental Prompts & Parallel Sessions
+## Accidental Prompts & Session Exclusions
 
-When running multiple agent sessions in parallel across different projects, accidental prompts can be prevented or retracted using simple markers:
+To inspect, exclude, or retract prompts from an active session without modifying raw transcript files or injecting prefix tags into chat messages:
 
-1. **Tag an Accidental Prompt Directly:**
-   Prefix the prompt with `[ignore]`, `[skip]`, `[wrong-session]`, or `[scratch]`:
-   ```text
-   [wrong-session] Fix the audio mixer volume slider
-   ```
-   Such prompts are automatically excluded from prompt notes.
+```bash
+# List prompts in active session with 1-based index numbers
+git prompt-log session
 
-2. **Retract an Already-Sent Accidental Prompt:**
-   If a prompt was sent by mistake, follow up in that same session with:
-   ```text
-   [ignore-last]
-   ```
-   (or `[wrong-session]`, `[ignore-prev]`, `[retract]`).
-   This drops the preceding accidental prompt (and drops the retraction marker).
-   To drop multiple accidental prompts: `[ignore-last 2]`.
-   To reset all prompts accumulated in the session: `[ignore-all]`.
+# Mark a specific prompt turn (e.g. #2) as excluded for this session (updates HEAD's note)
+git prompt-log session drop 2
 
-3. **Retract and Provide Real Prompt in One Turn:**
-   ```text
-   [ignore-last] Actually, fix the level select camera
-   ```
-   Drops the previous message and records only the intended prompt.
+# Exclude prompts matching a pattern for this session
+git prompt-log session drop "Commit"
 
-4. **Filtering and Editing Notes:**
-   ```bash
-   # Exclude prompts matching a regex when recording
-   git prompt-log record --drop "audio mixer"
+# Restore a previously excluded prompt
+git prompt-log session undrop 2
 
-   # Drop last prompt when recording
-   git prompt-log record --drop-last 1
+# Clear all exclusions for the session
+git prompt-log session clear
+```
 
-   # Edit recorded note interactively in $EDITOR
-   git prompt-log edit HEAD
-   ```
+### Filtering and Editing Notes:
+```bash
+# Exclude prompts matching a regex when manually recording
+git prompt-log record --drop "audio mixer"
+
+# Drop last prompt when recording
+git prompt-log record --drop-last 1
+
+# Edit recorded note interactively in $EDITOR
+git prompt-log edit HEAD
+```
 
 ---
 
@@ -2602,7 +2458,7 @@ def cmd_uninstall_hook(args: argparse.Namespace) -> int:
             run_git(["config", "--unset", key], repo_root=repo_root)
         for key in ("prompt-log.exclude", "prompt-note.exclude", "prompt-log.harness"):
             run_git(["config", "--unset-all", key], repo_root=repo_root)
-        print("Cleaned local git config (notes.rewrite*, prompt-log.exclude, prompt-log.harness)")
+        print("Cleaned local git config (notes.rewrite*, prompt-log.harness)")
 
     if getattr(args, "all", False) or getattr(args, "with_skill", False):
         for folder_name in ("git-prompt-log", "git-prompt-note", "agy-prompt-note"):

@@ -147,43 +147,9 @@ Assistant-Prompts:
 
 ---
 
-## Prompt Prefixes
+## Session Prompt Management (Exclusions & Retraction)
 
-Prompts can be excluded or retracted from notes using prefix tags in your messages.
-
-### Excluding Prompts
-
-Prefix a prompt with any of the following tags to prevent it from being recorded:
-
-- `[ignore]`
-- `[skip]`
-- `[wrong-session]`
-- `[scratch]`
-
-Example:
-```text
-[ignore] What was that git command again?
-```
-
-### Retracting Prompts
-
-If an unintended prompt was already sent in the active session, send a retraction tag to drop it:
-
-- `[ignore-last]` (or `[retract]`, `[wrong-session]`): Drops the preceding prompt.
-- `[ignore-last N]`: Drops the preceding *N* prompts (e.g., `[ignore-last 2]`).
-- `[ignore-all]`: Clears all prompts recorded for the current session.
-
-#### Targeted Retraction (Any Time in the Session)
-
-You do not need to retract a prompt immediately on the next turn. At any point later in the conversation, target earlier prompts by text matching or turn index:
-
-- `[retract "Commit"]` (or `[drop-prompt "Commit"]`): Excises earlier prompts matching `"Commit"` from the session history.
-- `[retract #2]` (or `[drop-prompt 2]`): Excises prompt turn #2 from the session history.
-- `[retract "Commit"] Implement authentication instead`: Retracts an earlier prompt and steers in the same turn.
-
-### Session Prompt Management (CLI)
-
-To inspect and exclude specific prompts from an active session without modifying raw transcript files or setting blanket global regexes:
+Rather than injecting prefix tags (such as `[ignore]` or `[skip]`) into chat messages—which pollutes conversational context and can degrade LLM steering—`git-prompt-log` manages prompt exclusions and retractions cleanly out-of-band via `git prompt-log session`:
 
 ```bash
 # List prompts in the active session with 1-based index numbers
@@ -202,21 +168,7 @@ git prompt-log session undrop 2
 git prompt-log session clear
 ```
 
-Session exclusions are persisted in `prompt-log-excludes.json` alongside the session data, and the note on `HEAD` is automatically refreshed.
-
-### Always-Skip Patterns (Configuration)
-
-To permanently and automatically skip routine recurring prompts (such as `"Commit"`, `"push"`, or short housekeeping directives) across all recordings without needing manual prefixes:
-
-```bash
-# Add an exclusion pattern for the current repository
-git config --add prompt-log.exclude "^(?i)commit$"
-
-# Or configure globally across all repositories
-git config --global --add prompt-log.exclude "^(?i)commit$"
-```
-
-Any prompt matching a configured `prompt-log.exclude` regex will be automatically omitted from prompt notes by both the post-commit hook and `git prompt-log record`.
+Session exclusions are persisted in `prompt-log-excludes.json` alongside the session data, and the prompt note on `HEAD` is automatically refreshed.
 
 ### Manual Filtering & Editing
 
