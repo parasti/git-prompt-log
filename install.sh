@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# git-prompt-note installer
+# git-prompt-log installer
 # Installs the CLI binary and prompts before applying global Git or agent configurations.
 
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR="${PREFIX}/bin"
-SKILL_DIR="${HOME}/.gemini/config/skills/git-prompt-note"
+SKILL_DIR="${HOME}/.gemini/config/skills/git-prompt-log"
 
 GLOBAL_GIT=""
 GLOBAL_SKILL=""
@@ -58,7 +58,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE_BIN="${SCRIPT_DIR}/bin/git-prompt-note"
+SOURCE_BIN="${SCRIPT_DIR}/bin/git-prompt-log"
 SOURCE_SKILL="${SCRIPT_DIR}/SKILL.md"
 
 if [[ ! -f "${SOURCE_BIN}" ]]; then
@@ -66,12 +66,12 @@ if [[ ! -f "${SOURCE_BIN}" ]]; then
     exit 1
 fi
 
-echo "==> Installing git-prompt-note CLI..."
+echo "==> Installing git-prompt-log CLI..."
 
 # 1. Install CLI binary
 mkdir -p "${BIN_DIR}"
-install -m 755 "${SOURCE_BIN}" "${BIN_DIR}/git-prompt-note"
-echo "  [+] Installed executable: ${BIN_DIR}/git-prompt-note"
+install -m 755 "${SOURCE_BIN}" "${BIN_DIR}/git-prompt-log"
+echo "  [+] Installed executable: ${BIN_DIR}/git-prompt-log"
 
 # Helper for interactive prompt
 prompt_yes_no() {
@@ -146,7 +146,7 @@ echo ""
 echo "==> Installation complete!"
 if [[ "${GLOBAL_GIT}" = false || "${GLOBAL_SKILL}" = false ]]; then
     echo ""
-    echo "To enable git-prompt-note for a specific repository, run:"
+    echo "To enable git-prompt-log for a specific repository, run:"
     echo "  cd /path/to/my-repo"
-    echo "  git prompt-note init"
+    echo "  git prompt-log init"
 fi
