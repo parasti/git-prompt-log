@@ -256,6 +256,10 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         self.assertTrue((hooks_dir / "post-commit").exists())
         self.assertTrue(os.access(hooks_dir / "post-commit", os.X_OK))
 
+        # Skill is not installed by default
+        skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
+        self.assertFalse(skill_file.exists())
+
     def test_install_hook_no_post_commit(self):
         script_path = Path(gpn.__file__).resolve()
         res = subprocess.run(
@@ -269,6 +273,37 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         hooks_dir = self.repo_dir / ".git" / "hooks"
         self.assertTrue((hooks_dir / "post-rewrite").exists())
         self.assertFalse((hooks_dir / "post-commit").exists())
+
+    def test_install_subcommand_defaults_to_no_skill(self):
+        script_path = Path(gpn.__file__).resolve()
+        res = subprocess.run(
+            ["python3", str(script_path), "install"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+
+        hooks_dir = self.repo_dir / ".git" / "hooks"
+        self.assertTrue((hooks_dir / "post-rewrite").exists())
+        self.assertTrue((hooks_dir / "post-commit").exists())
+
+        skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
+        self.assertFalse(skill_file.exists())
+
+    def test_install_subcommand_with_skill(self):
+        script_path = Path(gpn.__file__).resolve()
+        res = subprocess.run(
+            ["python3", str(script_path), "install", "--skill"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+
+        skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
+        self.assertTrue(skill_file.exists())
+        self.assertIn("git-prompt-log", skill_file.read_text(encoding="utf-8"))
 
     def test_post_commit_silent_when_no_agent_env(self):
         sha = self._commit("file.txt", "content", "Manual commit")
@@ -288,7 +323,7 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         # Should not attach any note to human commit
         self.assertIsNone(gpn.get_note_content(sha, repo_root=self.repo_dir))
 
-    def test_init_installs_hook_config_and_skill(self):
+    def test_init_defaults_to_no_skill(self):
         script_path = Path(gpn.__file__).resolve()
         res = subprocess.run(
             ["python3", str(script_path), "init"],
@@ -313,7 +348,20 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         ).strip()
         self.assertEqual(cfg_res, "refs/notes/commits")
 
-        # 3. Local skill installed
+        # 3. Local skill NOT installed by default
+        skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
+        self.assertFalse(skill_file.exists())
+
+    def test_init_installs_skill_with_flag(self):
+        script_path = Path(gpn.__file__).resolve()
+        res = subprocess.run(
+            ["python3", str(script_path), "init", "--skill"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+
         skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
         self.assertTrue(skill_file.exists())
         self.assertIn("git-prompt-log", skill_file.read_text(encoding="utf-8"))
@@ -346,7 +394,7 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
 
     def test_uninstall_hook_all(self):
         script_path = Path(gpn.__file__).resolve()
-        subprocess.run(["python3", str(script_path), "init"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["python3", str(script_path), "install", "--skill"], cwd=self.repo_dir, check=True, capture_output=True)
         hooks_dir = self.repo_dir / ".git" / "hooks"
         skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
         self.assertTrue(skill_file.exists())

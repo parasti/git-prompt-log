@@ -1356,8 +1356,12 @@ When running multiple agent sessions in parallel across different projects, acci
 ## CLI Reference
 
 ```bash
-# Initialize in a repository (hooks, local git config, local skill)
-git prompt-log init
+# Initialize / install in a repository (hooks, local git config; default: no skill)
+git prompt-log install
+# (or git prompt-log init)
+
+# Install with local repository assistant skill
+git prompt-log install --skill
 
 # Uninstall hooks
 git prompt-log uninstall-hook
@@ -1595,15 +1599,21 @@ def main():
     # init
     p_init = subparsers.add_parser(
         "init",
-        help="Initialize git-prompt-log in current repository (hooks, config, skill)",
+        help="Initialize git-prompt-log in current repository (hooks, config)",
         parents=[base_parser],
+    )
+    p_init.add_argument(
+        "--skill",
+        dest="with_skill",
+        action="store_true",
+        default=False,
+        help="Install local repository assistant skill at .agents/skills/git-prompt-log/SKILL.md",
     )
     p_init.add_argument(
         "--no-skill",
         dest="with_skill",
         action="store_false",
-        default=True,
-        help="Skip installing local .agents/skills/git-prompt-log/SKILL.md",
+        help="Do not install local repository assistant skill (default)",
     )
     p_init.add_argument(
         "--no-post-commit",
@@ -1650,9 +1660,25 @@ def main():
     p_edit = subparsers.add_parser("edit", help="Edit prompt note on a commit in $EDITOR", parents=[base_parser])
     p_edit.add_argument("commit", nargs="?", default="HEAD", help="Target commit hash or ref (default: HEAD)")
 
-    # install-hook
+    # install / install-hook
     p_install = subparsers.add_parser(
-        "install-hook", help="Install post-rewrite and post-commit hooks and configure git", parents=[base_parser]
+        "install",
+        aliases=["install-hook", "install-hooks"],
+        help="Install git-prompt-log in current repository (hooks, config)",
+        parents=[base_parser],
+    )
+    p_install.add_argument(
+        "--skill",
+        dest="with_skill",
+        action="store_true",
+        default=False,
+        help="Install local repository assistant skill at .agents/skills/git-prompt-log/SKILL.md",
+    )
+    p_install.add_argument(
+        "--no-skill",
+        dest="with_skill",
+        action="store_false",
+        help="Do not install local repository assistant skill (default)",
     )
     p_install.add_argument(
         "--no-post-commit",
@@ -1694,7 +1720,7 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command in ("init", "install-hook"):
+    if args.command in ("init", "install", "install-hook", "install-hooks"):
         sys.exit(cmd_install_hook(args))
     elif args.command in ("uninstall-hook", "uninstall", "uninstall-hooks"):
         sys.exit(cmd_uninstall_hook(args))

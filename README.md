@@ -22,14 +22,16 @@ cd git-prompt-log
 
 ```bash
 cd my-project
-git prompt-log init
+git prompt-log install
+# (or git prompt-log init)
 ```
 
 This single command:
 1. Installs `.git/hooks/post-commit` to record prompts when an assistant commits (no-op during human commits; skip with `--no-post-commit`).
 2. Installs `.git/hooks/post-rewrite` so Git automatically invokes note reconciliation on rebase/squash.
 3. Configures repository-scoped Git notes rewriting (`notes.rewrite.rebase = true`, `notes.rewriteRef = refs/notes/commits`).
-4. Installs the repository assistant skill at `.agents/skills/git-prompt-log/SKILL.md` (skip with `--no-skill`).
+
+*(Optional: pass `--skill` to also install the repository assistant skill at `.agents/skills/git-prompt-log/SKILL.md`).*
 
 ### Workflow
 
