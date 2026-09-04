@@ -23,8 +23,7 @@ cd git-prompt-log
 `git-prompt-log` is built and developed using `git-prompt-log`. Since Git notes are not cloned by default ([and should not be](#why-export-and-import-instead-of-pushing-notes)), import our exported prompt log to inspect the real prompts that built this codebase:
 
 ```bash
-# In the cloned git-prompt-log directory:
-git prompt-log init
+# In the cloned git-prompt-log directory, import past prompt notes:
 git prompt-log import-log prompts/git-prompt-log.md
 
 # View the commit history with prompt timelines in rich color:
@@ -36,6 +35,22 @@ You can view the causal prompt on each commit, or pass `--full` to view the cumu
 ```bash
 git prompt-log log --full
 ```
+
+Next, try live prompt recording on this repo:
+
+```bash
+# 1. Enable prompt logging in this repository:
+git prompt-log init
+```
+
+2. Ask your coding assistant (e.g. Google Antigravity, Claude Code) to make a change and commit it:
+   > *"Add a small doc improvement to the README and commit it"*
+
+3. Look at the log again:
+   ```bash
+   git prompt-log log -n 1
+   ```
+   Notice that the newly created commit now automatically carries the exact steering prompt you gave your assistant!
 
 ### The Day-to-Day Workflow
 
