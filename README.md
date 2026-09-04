@@ -47,8 +47,9 @@ git prompt-note init
 
 This single command:
 1. Installs `.git/hooks/post-rewrite` so Git automatically invokes note reconciliation on rebase/squash.
-2. Configures repository-scoped Git notes rewriting (`notes.rewrite.rebase = true`, `notes.rewriteRef = refs/notes/commits`).
-3. Installs the repository-local assistant skill at `.agents/skills/agy-prompt-note/SKILL.md`.
+2. Installs `.git/hooks/post-commit` so agent commits automatically have their steering prompts recorded (strictly no-op during human commits). Use `--no-post-commit` to skip.
+3. Configures repository-scoped Git notes rewriting (`notes.rewrite.rebase = true`, `notes.rewriteRef = refs/notes/commits`).
+4. Installs the repository-local assistant skill at `.agents/skills/agy-prompt-note/SKILL.md`. Use `--no-skill` to skip.
 
 ---
 

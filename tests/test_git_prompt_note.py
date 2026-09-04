@@ -237,7 +237,7 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         self.assertEqual(parsed[0].prompts[0].text, "Create file 1")
         self.assertEqual(parsed[0].prompts[1].text, "Create file 2")
 
-    def test_install_hook_installs_post_rewrite_by_default(self):
+    def test_install_hook_installs_hooks_by_default(self):
         script_path = Path(gpn.__file__).resolve()
         res = subprocess.run(
             ["python3", str(script_path), "install-hook"],
@@ -250,13 +250,14 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         hooks_dir = self.repo_dir / ".git" / "hooks"
         self.assertTrue((hooks_dir / "post-rewrite").exists())
         self.assertTrue(os.access(hooks_dir / "post-rewrite", os.X_OK))
-        # post-commit should NOT be installed by default
-        self.assertFalse((hooks_dir / "post-commit").exists())
+        # post-commit is installed by default
+        self.assertTrue((hooks_dir / "post-commit").exists())
+        self.assertTrue(os.access(hooks_dir / "post-commit", os.X_OK))
 
-    def test_install_hook_with_post_commit(self):
+    def test_install_hook_no_post_commit(self):
         script_path = Path(gpn.__file__).resolve()
         res = subprocess.run(
-            ["python3", str(script_path), "install-hook", "--with-post-commit"],
+            ["python3", str(script_path), "install-hook", "--no-post-commit"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -264,8 +265,8 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         self.assertEqual(res.returncode, 0)
 
         hooks_dir = self.repo_dir / ".git" / "hooks"
-        self.assertTrue((hooks_dir / "post-commit").exists())
         self.assertTrue((hooks_dir / "post-rewrite").exists())
+        self.assertFalse((hooks_dir / "post-commit").exists())
 
     def test_post_commit_silent_when_no_agent_env(self):
         sha = self._commit("file.txt", "content", "Manual commit")
@@ -295,10 +296,12 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         )
         self.assertEqual(res.returncode, 0)
 
-        # 1. Hook installed
+        # 1. Hooks installed
         hooks_dir = self.repo_dir / ".git" / "hooks"
         self.assertTrue((hooks_dir / "post-rewrite").exists())
         self.assertTrue(os.access(hooks_dir / "post-rewrite", os.X_OK))
+        self.assertTrue((hooks_dir / "post-commit").exists())
+        self.assertTrue(os.access(hooks_dir / "post-commit", os.X_OK))
 
         # 2. Local git config set
         cfg_res = subprocess.check_output(
@@ -312,6 +315,20 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         skill_file = self.repo_dir / ".agents" / "skills" / "agy-prompt-note" / "SKILL.md"
         self.assertTrue(skill_file.exists())
         self.assertIn("agy-prompt-note", skill_file.read_text(encoding="utf-8"))
+
+    def test_init_no_post_commit(self):
+        script_path = Path(gpn.__file__).resolve()
+        res = subprocess.run(
+            ["python3", str(script_path), "init", "--no-post-commit"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+
+        hooks_dir = self.repo_dir / ".git" / "hooks"
+        self.assertTrue((hooks_dir / "post-rewrite").exists())
+        self.assertFalse((hooks_dir / "post-commit").exists())
 
 
 class TestExportAndImportLog(unittest.TestCase):
