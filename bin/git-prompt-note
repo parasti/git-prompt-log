@@ -866,6 +866,58 @@ def get_default_slug(repo_root: Path) -> str:
     return cleaned or "feature"
 
 
+def should_use_color(color_arg: str = "auto", repo_root: Optional[Path] = None) -> bool:
+    """Determines whether colored terminal output should be used."""
+    if color_arg == "always":
+        return True
+    if color_arg == "never":
+        return False
+    # auto: respect NO_COLOR env var and isatty
+    if os.environ.get("NO_COLOR"):
+        return False
+    if not sys.stdout.isatty():
+        return False
+    if repo_root:
+        code, out, _ = run_git(["config", "--get", "color.ui"], repo_root=repo_root)
+        if code == 0 and out.strip().lower() in ("false", "never"):
+            return False
+    return True
+
+
+def pipe_to_pager(text: str, repo_root: Optional[Path] = None):
+    """Pipes text output through the configured Git/system pager."""
+    if not sys.stdout.isatty():
+        sys.stdout.write(text)
+        return
+
+    pager = os.environ.get("GIT_PAGER")
+    if not pager and repo_root:
+        c, out, _ = run_git(["var", "GIT_PAGER"], repo_root=repo_root)
+        if c == 0 and out.strip():
+            pager = out.strip()
+    if not pager:
+        pager = os.environ.get("PAGER", "less")
+
+    if pager in ("cat", ""):
+        sys.stdout.write(text)
+        return
+
+    env = os.environ.copy()
+    if "LESS" not in env:
+        env["LESS"] = "FRX"
+    if "LV" not in env:
+        env["LV"] = "-c"
+
+    try:
+        proc = subprocess.Popen(pager, shell=True, stdin=subprocess.PIPE, text=True, encoding="utf-8", env=env)
+        try:
+            proc.communicate(input=text)
+        except (BrokenPipeError, KeyboardInterrupt):
+            pass
+    except Exception:
+        sys.stdout.write(text)
+
+
 def cmd_log(args: argparse.Namespace) -> int:
     """Displays commits in range with their active steering prompts."""
     repo_root = get_repo_root()
@@ -882,24 +934,42 @@ def cmd_log(args: argparse.Namespace) -> int:
         if code != 0 or not log_out.strip():
             return 0
 
+    use_color = should_use_color(getattr(args, "color", "auto"), repo_root=repo_root)
+    c_yellow = "\033[33m" if use_color else ""
+    c_bold = "\033[1m" if use_color else ""
+    c_cyan = "\033[36m" if use_color else ""
+    c_reset = "\033[0m" if use_color else ""
+
+    lines = []
     commits = [line.split(" ", 1) for line in log_out.splitlines() if line.strip()]
     for parts in commits:
         c_hash = parts[0]
         subj = parts[1] if len(parts) > 1 else ""
         note_raw = get_note_content(c_hash, ref=args.ref, repo_root=repo_root)
-        print(f"* {c_hash[:8]} {subj}")
+        lines.append(f"* {c_yellow}{c_hash[:8]}{c_reset} {c_bold}{subj}{c_reset}")
         if note_raw:
             notes = parse_notes(note_raw)
             if notes and notes[-1].prompts:
                 if getattr(args, "full", False):
                     for p in notes[-1].prompts:
                         indented = p.text.replace("\n", "\n    ")
-                        print(f"  [{p.timestamp}] {indented}")
+                        lines.append(f"  {c_cyan}[{p.timestamp}]{c_reset} {indented}")
                 else:
                     active_p = notes[-1].prompts[-1]
                     indented = active_p.text.replace("\n", "\n    ")
-                    print(f"  [{active_p.timestamp}] {indented}")
-        print()
+                    lines.append(f"  {c_cyan}[{active_p.timestamp}]{c_reset} {indented}")
+        lines.append("")
+
+    full_output = "\n".join(lines)
+    if not full_output.endswith("\n"):
+        full_output += "\n"
+
+    no_pager = getattr(args, "no_pager", False) or getattr(args, "global_no_pager", False)
+    if no_pager:
+        sys.stdout.write(full_output)
+    else:
+        pipe_to_pager(full_output, repo_root=repo_root)
+
     return 0
 
 
@@ -1486,6 +1556,18 @@ def main():
         "--ref",
         default=DEFAULT_NOTES_REF,
         help=f"Git notes reference namespace (default: {DEFAULT_NOTES_REF})",
+    )
+    base_parser.add_argument(
+        "--no-pager",
+        dest="no_pager",
+        action="store_true",
+        help="Do not pipe output into a pager",
+    )
+    base_parser.add_argument(
+        "--color",
+        choices=["always", "never", "auto"],
+        default="auto",
+        help="Control colored output (always, never, auto)",
     )
 
     parser = argparse.ArgumentParser(

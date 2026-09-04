@@ -879,13 +879,33 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
 
         # Log command displays cleanly
         out_log = subprocess.check_output(
-            ["python3", str(Path(gpn.__file__).resolve()), "log"],
+            ["python3", str(Path(gpn.__file__).resolve()), "log", "--no-pager"],
             cwd=self.repo_dir,
             text=True,
             env=self.env,
         )
         self.assertIn("feat: Clean Parser", out_log)
         self.assertIn("Reset and re-split cleanly into tokens and parser", out_log)
+
+        # Verify color formatting in log
+        out_color = subprocess.check_output(
+            ["python3", str(Path(gpn.__file__).resolve()), "log", "--color=always", "--no-pager"],
+            cwd=self.repo_dir,
+            text=True,
+            env=self.env,
+        )
+        self.assertIn("\033[33m", out_color)
+        self.assertIn("\033[36m", out_color)
+        self.assertIn("\033[0m", out_color)
+
+        out_no_color = subprocess.check_output(
+            ["python3", str(Path(gpn.__file__).resolve()), "log", "--color=never", "--no-pager"],
+            cwd=self.repo_dir,
+            text=True,
+            env=self.env,
+        )
+        self.assertNotIn("\033[33m", out_no_color)
+        self.assertNotIn("\033[36m", out_no_color)
 
 
 if __name__ == "__main__":
