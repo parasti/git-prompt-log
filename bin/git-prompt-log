@@ -1428,7 +1428,18 @@ def cmd_record(args: argparse.Namespace) -> int:
             message_input = sys.stdin.read().strip()
 
     extra_options = {"message": message_input}
-    adapter_name = getattr(args, "adapter", "auto")
+    harness_input = getattr(args, "harness", None)
+    known_harnesses = {"antigravity", "claude", "manual", "direct", "auto"}
+    if harness_input and harness_input.lower() in known_harnesses:
+        v = harness_input.lower()
+        adapter_name = "manual" if v == "direct" else v
+        custom_harness_label = None
+    elif harness_input:
+        adapter_name = "manual"
+        custom_harness_label = harness_input
+    else:
+        adapter_name = "auto"
+        custom_harness_label = None
 
     adapter, session_data = REGISTRY.find_session_data(
         adapter_name=adapter_name,
@@ -1454,7 +1465,7 @@ def cmd_record(args: argparse.Namespace) -> int:
             return 1
     else:
         harness_def, def_model = adapter.get_agent_identity(session_data.get("detected_model")) if adapter else ("Unknown", "Unknown")
-        harness = getattr(args, "harness", None) or session_data.get("harness") or harness_def
+        harness = custom_harness_label or session_data.get("harness") or harness_def
         model = getattr(args, "model", None) or session_data.get("detected_model") or def_model
         session_id = session_data["session_id"]
         all_prompts: List[PromptEntry] = session_data.get("prompts", [])
@@ -1595,7 +1606,7 @@ def cmd_post_commit(args: argparse.Namespace) -> int:
     if not session_data or not session_data.get("prompts"):
         return 0
 
-    args.adapter = active_adapter.name
+    args.harness = active_adapter.name
     args.commit = "HEAD"
     args.session = agent_session_id
     args.dry_run = False
@@ -2674,7 +2685,7 @@ def main():
     )
     p_init.add_argument(
         "--harness",
-        "-a",
+        "-H",
         choices=["antigravity", "claude", "manual", "auto"],
         default=None,
         help="Explicitly configure default assistant harness",
@@ -2692,17 +2703,12 @@ def main():
     p_record.add_argument("--commit", "-c", help="Target commit hash or ref (default: HEAD)")
     p_record.add_argument("--session", "-s", help="Explicit session conversation ID UUID")
     p_record.add_argument(
-        "--agent",
-        "--adapter",
-        "-a",
-        choices=["auto", "antigravity", "claude", "manual", "direct"],
-        default="auto",
-        dest="adapter",
-        help="Target assistant agent (auto, antigravity, claude, manual)",
+        "--harness",
+        "-H",
+        help="Target assistant harness (antigravity, claude, manual) or custom attribution string",
     )
     p_record.add_argument("--message", "-m", help="Manually record prompt text without transcript")
     p_record.add_argument("--stdin", action="store_true", help="Read manual prompt text from standard input")
-    p_record.add_argument("--harness", help="Override harness name string in note")
     p_record.add_argument("--model", help="Override model name string in note")
     p_record.add_argument("--exclude", "--drop", help="Exclude prompts matching regex pattern")
     p_record.add_argument("--drop-last", type=int, default=0, help="Exclude last N prompts")

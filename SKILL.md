@@ -90,8 +90,8 @@ echo "Refactor caching layer" | git prompt-log record --stdin
 git prompt-log record -m "System architecture design" --harness "Human Dev" --model "Manual"
 ```
 
-### Supported Agents & Harnesses
-`git-prompt-log` supports multiple coding assistants (`antigravity`, `claude`, `manual`):
+### Supported Harnesses
+`git-prompt-log` supports multiple assistant harnesses (`antigravity`, `claude`, `manual`):
 ```bash
 # Explicitly set the active harness for this repository (or --global)
 git prompt-log harness antigravity
@@ -102,8 +102,8 @@ git config prompt-log.harness antigravity
 git prompt-log harness
 git prompt-log harness --json
 
-# Explicitly record using a specific agent
-git prompt-log record --agent claude -c HEAD
+# Explicitly record using a specific harness
+git prompt-log record --harness claude -c HEAD
 ```
 
 ### Interactive Note Editing

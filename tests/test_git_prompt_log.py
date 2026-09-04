@@ -1331,6 +1331,17 @@ class TestIngestionAdapters(unittest.TestCase):
         self.assertIn("Assistant-Model: Custom Mind", note_content)
         self.assertIn("Initial prompt from developer", note_content)
 
+        # 3. Explicit record using --harness claude
+        c_file = repo_dir / "claude_hist.jsonl"
+        c_file.write_text(json.dumps({"role": "user", "content": "Explicit claude steer", "timestamp": "2026-09-04T18:00:00Z"}) + "\n", encoding="utf-8")
+        c_env = os.environ.copy()
+        c_env["CLAUDE_SESSION_ID"] = "sess-c-456"
+        c_env["CLAUDE_TRANSCRIPT_PATH"] = str(c_file)
+        subprocess.run(["python3", script_path, "record", "--harness", "claude", "-c", "HEAD"], cwd=repo_dir, env=c_env, check=True, capture_output=True)
+        note_claude = gpn.get_note_content("HEAD", repo_root=repo_dir)
+        self.assertIn("Assistant-Harness: Claude Code", note_claude)
+        self.assertIn("Explicit claude steer", note_claude)
+
     def test_post_commit_causality_guard_and_claude_hook(self):
         repo_dir = self.work_dir / "repo_claude"
         repo_dir.mkdir()

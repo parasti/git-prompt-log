@@ -193,11 +193,11 @@ Prompts can also be filtered or modified retroactively via the CLI:
 
 ---
 
-## Supported Agents
+## Supported Harnesses
 
-`git-prompt-log` automatically detects and ingests prompts from supported coding assistants or manual human entry:
+`git-prompt-log` automatically detects and ingests prompts from supported assistant harnesses or manual human entry:
 
-| Agent / Harness | Identifier | Signals & Transcripts |
+| Harness | Identifier | Signals & Transcripts |
 | :--- | :--- | :--- |
 | Google Antigravity | `antigravity` | `$AGY_SESSION_ID`, `$ANTIGRAVITY_CONVERSATION_ID`, `brain/` |
 | Claude Code | `claude` | `$CLAUDE_SESSION_ID`, `~/.claude/projects/`, `$CLAUDE_TRANSCRIPT_PATH` |
