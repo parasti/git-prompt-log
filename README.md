@@ -1,0 +1,146 @@
+# git-prompt-note
+
+`git-prompt-note` attaches AI session metadata and human steering prompts directly to Git commits using Git notes (`refs/notes/commits`).
+
+It provides clean, deterministic prompt attribution without altering commit SHAs, cluttering working trees with markdown files, or wrapping Git in proprietary runtime proxies.
+
+---
+
+## Key Principles
+
+1. **Prompts over Transcripts:** The patch already contains the generated code. Git notes store only the navigator prompts that steered the assistant.
+2. **Zero Tree Pollution:** Prompt notes live entirely outside the working tree in `refs/notes/commits`.
+3. **Immutable DAG:** Attaching or updating notes does not alter commit hashes or commit messages.
+4. **Rebase & Squash Native:** Integrates with Git's `.git/hooks/post-rewrite` hook to automatically merge, deduplicate, and preserve prompts across interactive rebase, squash, fixup, and amend.
+5. **Universal Git Compatibility:** Native `git log` and `git show` display notes without third-party tools.
+
+---
+
+## Installation
+
+Clone and run the installer:
+
+```bash
+git clone https://github.com/neverball/git-prompt-note.git
+cd git-prompt-note
+./install.sh
+```
+
+`./install.sh` performs:
+1. Installs the `git-prompt-note` executable into `~/.local/bin/`.
+2. Configures global Git settings so rewrites preserve notes (`notes.rewrite.rebase = true`, `notes.rewriteRef = refs/notes/commits`).
+3. Installs the Antigravity global skill to `~/.gemini/config/skills/agy-prompt-note/SKILL.md`.
+
+---
+
+## Quickstart in a Repository
+
+### 1. Enable in a Repository
+Run once inside your repository:
+
+```bash
+cd my-project
+git prompt-note install-hook
+```
+
+This installs `.git/hooks/post-rewrite` so Git automatically invokes note reconciliation whenever you run `git rebase -i` or squash commits.
+
+### 2. Instruct the Assistant
+Add a prompt attribution guideline to `AGENTS.md` in your repository:
+
+```markdown
+## AI Prompt Provenance
+After authoring commits, record the steering prompt note on the commit:
+
+```bash
+git prompt-note record
+```
+```
+
+### 3. Record Notes
+When an assistant authors a commit, it records the note:
+
+```bash
+git prompt-note record
+```
+
+The tool identifies the active conversational turn and attributes only the steering prompts authored since the prior commit.
+
+### 4. Inspect Notes
+View notes natively in standard Git:
+
+```bash
+# Standard git log
+git log -n 1
+
+# Or via git-prompt-note
+git prompt-note show HEAD
+```
+
+---
+
+## Note Schema
+
+```text
+Assistant-Session: 9674eda6-390f-4b1d-9910-72bec1843401
+Assistant-Harness: Antigravity CLI 1.1.25
+Assistant-Model: Gemini 3.8 Flash (High)
+Assistant-Recorded: 2026-09-04 01:03:57 UTC
+
+Assistant-Prompts:
+  [2026-09-04 01:03:57 UTC] Pivot camera around ball origin
+  [2026-09-04 01:09:25 UTC] Let's implement this.
+```
+
+When multiple commits are squashed across different sessions, each session is preserved sequentially separated by `---`:
+
+```text
+Assistant-Session: 147638d8-6fb3-46df-a685-441b1aec2349
+Assistant-Harness: Antigravity CLI 1.1.24
+Assistant-Model: Gemini 3.8 Flash (High)
+Assistant-Recorded: 2026-09-02 18:30:12 UTC
+
+Assistant-Prompts:
+  [2026-09-02 18:25:01 UTC] Refactor camera mapping
+
+---
+
+Assistant-Session: 9674eda6-390f-4b1d-9910-72bec1843401
+Assistant-Harness: Antigravity CLI 1.1.25
+Assistant-Model: Gemini 3.8 Flash (High)
+Assistant-Recorded: 2026-09-04 01:03:57 UTC
+
+Assistant-Prompts:
+  [2026-09-04 01:02:10 UTC] Fix pitch clamping
+```
+
+---
+
+## Remote Synchronization
+
+To push and fetch notes automatically alongside branch pushes:
+
+```bash
+git config --add remote.origin.push "refs/notes/*:refs/notes/*"
+git config --add remote.origin.fetch "+refs/notes/*:refs/notes/*"
+```
+
+---
+
+## Testing
+
+Run the automated test suite:
+
+```bash
+make test
+```
+
+## Uninstallation
+
+```bash
+./uninstall.sh
+```
+
+## License
+
+GPL v2+ (or MIT upon release).
