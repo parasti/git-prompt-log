@@ -786,6 +786,43 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         self.assertEqual(notes3[0].prompts[0].text, "Try implementing custom Doppler shift calculation in audio update loop")
         self.assertEqual(notes3[0].prompts[1].text, "The custom Doppler math is causing distortion. Drop that commit and use OpenAL distance attenuation instead")
 
+    def test_rebase_reorder_commits_preserves_notes_without_duplication(self):
+        # 1. Base commit
+        self._commit("base.txt", "base", "chore: Base")
+
+        # 2. Commit A
+        self._append_prompt("Feature A (Sound)", "2026-09-04T10:05:00Z")
+        sha_a = self._commit("sound.txt", "sound", "feat: Sound")
+
+        # 3. Commit B
+        self._append_prompt("Feature B (Music)", "2026-09-04T10:10:00Z")
+        sha_b = self._commit("music.txt", "music", "feat: Music")
+
+        # Reorder commits so B is applied before A
+        reorder_py = "python3 -c 'import sys; p=sys.argv[1]; lines=open(p).readlines(); lines[0], lines[1] = lines[1], lines[0]; open(p,\"w\").writelines(lines)'"
+        env = self.env.copy()
+        env["GIT_SEQUENCE_EDITOR"] = reorder_py
+        subprocess.run(["git", "rebase", "-i", "HEAD~2"], cwd=self.repo_dir, check=True, env=env)
+
+        # Retrieve new commit hashes in reordered history (HEAD is A, HEAD~1 is B)
+        new_sha_a = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+        new_sha_b = subprocess.check_output(["git", "rev-parse", "HEAD~1"], cwd=self.repo_dir, text=True).strip()
+
+        # Both reordered commits must retain their exact notes
+        note_a = gpn.parse_notes(gpn.get_note_content(new_sha_a, repo_root=self.repo_dir))[0]
+        note_b = gpn.parse_notes(gpn.get_note_content(new_sha_b, repo_root=self.repo_dir))[0]
+        self.assertEqual(note_a.prompts[0].text, "Feature A (Sound)")
+        self.assertEqual(note_b.prompts[0].text, "Feature B (Music)")
+
+        # 4. Author a subsequent commit C in the same session
+        self._append_prompt("Feature C (UI)", "2026-09-04T10:15:00Z")
+        sha_c = self._commit("ui.txt", "ui", "feat: UI")
+
+        # Commit C must receive ONLY its own prompt (no duplication of B even though B was originally created later)
+        note_c = gpn.parse_notes(gpn.get_note_content(sha_c, repo_root=self.repo_dir))[0]
+        self.assertEqual(len(note_c.prompts), 1)
+        self.assertEqual(note_c.prompts[0].text, "Feature C (UI)")
+
 
 if __name__ == "__main__":
     unittest.main()

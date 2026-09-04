@@ -633,9 +633,11 @@ def cmd_record(args: argparse.Namespace) -> int:
     all_prompts: List[PromptEntry] = session_data.get("prompts", [])
 
     # Filter prompts leading up to this commit:
-    # Check if an ancestor commit has a note with this session_id
-    code, log_out, _ = run_git(["log", "--format=%H", f"{commit_hash}~1", "-n", "20"], repo_root=repo_root)
-    last_ancestor_ts: Optional[str] = None
+    # Check ancestor commits on the branch for notes with this session_id
+    code, log_out, _ = run_git(["log", "--format=%H", f"{commit_hash}~1", "-n", "50"], repo_root=repo_root)
+    ancestor_prompt_keys: Set[Tuple[str, str]] = set()
+    max_ancestor_ts: Optional[str] = None
+
     if code == 0 and log_out:
         for anc_hash in log_out.splitlines():
             anc_note_raw = get_note_content(anc_hash, ref=ref, repo_root=repo_root)
@@ -643,18 +645,23 @@ def cmd_record(args: argparse.Namespace) -> int:
                 anc_notes = parse_notes(anc_note_raw)
                 for an in anc_notes:
                     if an.session_id == session_id and an.prompts:
-                        last_ancestor_ts = parse_timestamp_sort_key(an.prompts[-1].timestamp)
-                        break
-                if last_ancestor_ts:
-                    break
+                        for p in an.prompts:
+                            pts = parse_timestamp_sort_key(p.timestamp)
+                            ancestor_prompt_keys.add((pts, p.text.strip()))
+                            if max_ancestor_ts is None or pts > max_ancestor_ts:
+                                max_ancestor_ts = pts
 
     commit_sort_ts = parse_timestamp_sort_key(commit_date_utc)
     target_prompts: List[PromptEntry] = []
 
     for p in all_prompts:
         pts = parse_timestamp_sort_key(p.timestamp)
-        # If ancestor had prompts, only take prompts strictly after ancestor's last prompt
-        if last_ancestor_ts and pts <= last_ancestor_ts:
+        key = (pts, p.text.strip())
+        # Skip prompts that are already recorded on any ancestor commit
+        if key in ancestor_prompt_keys:
+            continue
+        # Also skip prompts older than the latest ancestor checkpoint
+        if max_ancestor_ts and pts <= max_ancestor_ts:
             continue
         target_prompts.append(p)
 
