@@ -361,6 +361,40 @@ def write_note_content(commit_hash: str, note_text: str, ref: str = DEFAULT_NOTE
             os.remove(temp_path)
 
 
+def remove_note_content(commit_hash: str, ref: str = DEFAULT_NOTES_REF, repo_root: Optional[Path] = None) -> bool:
+    """Removes a git note on a commit."""
+    code, _, _ = run_git(["notes", f"--ref={ref}", "remove", commit_hash], repo_root=repo_root)
+    return code == 0
+
+
+def get_configured_exclude_patterns(repo_root: Optional[Path] = None) -> List[str]:
+    """Retrieves all prompt-log.exclude (and legacy prompt-note.exclude) regex patterns from git config."""
+    patterns: List[str] = []
+    for key in ("prompt-log.exclude", "prompt-note.exclude"):
+        code, out, _ = run_git(["config", "--get-all", key], repo_root=repo_root)
+        if code == 0 and out:
+            for line in out.splitlines():
+                line = line.strip()
+                if line and line not in patterns:
+                    patterns.append(line)
+    return patterns
+
+
+def _safe_search(pattern: str, text: str) -> bool:
+    """Safely executes regex search against text, handling inline flags and invalid patterns."""
+    if not pattern:
+        return False
+    try:
+        # Strip inline flags (e.g. (?i)) if misplaced because re.IGNORECASE is already supplied
+        norm_pattern = re.sub(r"\(\?[aiLmsux]+\)", "", pattern)
+        return bool(re.search(norm_pattern, text, re.IGNORECASE))
+    except re.error:
+        try:
+            return bool(re.search(pattern, text, re.IGNORECASE))
+        except re.error:
+            return False
+
+
 # --- Transcript and Agent Discovery ---
 
 
@@ -414,9 +448,16 @@ STANDALONE_RETRACT_RE = re.compile(
 )
 
 
-def is_ignored_prompt(text: str) -> bool:
-    """Returns True if the prompt begins with an ignore/wrong-session marker."""
-    return bool(IGNORE_PREFIX_RE.match(text.strip()))
+def is_ignored_prompt(text: str, custom_patterns: Optional[List[str]] = None) -> bool:
+    """Returns True if the prompt begins with an ignore/wrong-session marker or matches custom exclusion patterns."""
+    clean = text.strip()
+    if bool(IGNORE_PREFIX_RE.match(clean)):
+        return True
+    if custom_patterns:
+        for pat in custom_patterns:
+            if _safe_search(pat, clean):
+                return True
+    return False
 
 
 def clean_user_prompt(content: str) -> str:
@@ -455,7 +496,7 @@ def get_agent_identity() -> Tuple[str, str]:
     return harness, "Gemini 3.8 Flash (High)"
 
 
-def parse_session_transcript(transcript_path: Path) -> Optional[Dict]:
+def parse_session_transcript(transcript_path: Path, custom_patterns: Optional[List[str]] = None) -> Optional[Dict]:
     """Parses transcript_full.jsonl or transcript.jsonl into user prompt turns."""
     if not transcript_path.exists():
         return None
@@ -503,7 +544,7 @@ def parse_session_transcript(transcript_path: Path) -> Optional[Dict]:
             if m_all:
                 prompts.clear()
                 remaining = m_all.group(1).strip() if m_all.group(1) else ""
-                if remaining and not is_ignored_prompt(remaining):
+                if remaining and not is_ignored_prompt(remaining, custom_patterns=custom_patterns):
                     prompts.append(PromptEntry(timestamp=format_utc(created_at), text=remaining))
                 continue
 
@@ -515,7 +556,7 @@ def parse_session_transcript(transcript_path: Path) -> Optional[Dict]:
                 for _ in range(min(n, len(prompts))):
                     prompts.pop()
                 remaining = m_last.group(4).strip() if m_last.group(4) else ""
-                if remaining and not is_ignored_prompt(remaining):
+                if remaining and not is_ignored_prompt(remaining, custom_patterns=custom_patterns):
                     prompts.append(PromptEntry(timestamp=format_utc(created_at), text=remaining))
                 continue
 
@@ -525,8 +566,8 @@ def parse_session_transcript(transcript_path: Path) -> Optional[Dict]:
                     prompts.pop()
                 continue
 
-            # 4. Prompt explicitly marked to ignore: [ignore] ..., [wrong-session] ...
-            if is_ignored_prompt(clean):
+            # 4. Prompt explicitly marked to ignore or matching custom exclusion pattern:
+            if is_ignored_prompt(clean, custom_patterns=custom_patterns):
                 continue
 
             prompts.append(PromptEntry(timestamp=format_utc(created_at), text=clean))
@@ -556,20 +597,24 @@ def find_session_transcript(
     session_id: Optional[str] = None,
     repo_root: Optional[Path] = None,
     max_age_seconds: Optional[int] = None,
+    custom_patterns: Optional[List[str]] = None,
 ) -> Optional[Dict]:
     """Finds and parses the appropriate session transcript."""
     brain = get_brain_dir()
     if not brain.exists():
         return None
 
+    repo = repo_root or get_repo_root()
+    if custom_patterns is None:
+        custom_patterns = get_configured_exclude_patterns(repo_root=repo)
+
     if session_id:
         t_path = brain / session_id / ".system_generated" / "logs" / "transcript.jsonl"
         if t_path.exists():
-            return parse_session_transcript(t_path)
+            return parse_session_transcript(t_path, custom_patterns=custom_patterns)
         return None
 
     # Auto-detect latest active session matching repo
-    repo = repo_root or get_repo_root()
     repo_strs = {str(repo).lower(), repo.name.lower()}
 
     matching = []
@@ -599,7 +644,7 @@ def find_session_transcript(
 
     # Pick most recently modified session
     matching.sort(key=lambda x: x[0], reverse=True)
-    return parse_session_transcript(matching[0][1])
+    return parse_session_transcript(matching[0][1], custom_patterns=custom_patterns)
 
 
 # --- Core Command Implementations ---
@@ -622,55 +667,103 @@ def cmd_record(args: argparse.Namespace) -> int:
     _, date_out, _ = run_git(["show", "-s", "--format=%cI", commit_hash], repo_root=repo_root)
     commit_date_utc = format_utc(date_out)
 
-    session_data = find_session_transcript(args.session, repo_root=repo_root)
-    if not session_data:
-        sys.stderr.write("No matching agent session transcript found.\n")
-        return 1
-
-    harness, def_model = get_agent_identity()
-    model = session_data.get("detected_model") or def_model
-    session_id = session_data["session_id"]
-    all_prompts: List[PromptEntry] = session_data.get("prompts", [])
-
-    commit_sort_ts = parse_timestamp_sort_key(commit_date_utc)
-    target_prompts: List[PromptEntry] = []
-
-    for p in all_prompts:
-        pts = parse_timestamp_sort_key(p.timestamp)
-        if pts <= commit_sort_ts:
-            target_prompts.append(p)
-
-    if not target_prompts and all_prompts:
-        # Fallback to all session prompts if commit timestamp slightly precedes prompt log
-        target_prompts = list(all_prompts)
-
+    configured_excludes = get_configured_exclude_patterns(repo_root=repo_root)
+    exclude_patterns: List[str] = list(configured_excludes)
     if getattr(args, "exclude", None):
-        pat = re.compile(args.exclude, re.IGNORECASE)
-        target_prompts = [p for p in target_prompts if not pat.search(p.text)]
+        if args.exclude not in exclude_patterns:
+            exclude_patterns.append(args.exclude)
 
-    if getattr(args, "drop_last", 0) and args.drop_last > 0:
-        target_prompts = target_prompts[:-args.drop_last]
-
-    # Sort reverse-chronologically so causal prompt is at the top
-    target_prompts.sort(key=lambda p: parse_timestamp_sort_key(p.timestamp), reverse=True)
-
-    new_note = SessionNote(
-        session_id=session_id,
-        harness=harness,
-        model=model,
-        recorded_at=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-        prompts=target_prompts,
-    )
+    session_data = find_session_transcript(args.session, repo_root=repo_root, custom_patterns=exclude_patterns)
 
     # If the commit already has existing notes, merge with them while preserving non-prompt content
     existing_raw = get_note_content(commit_hash, ref=ref, repo_root=repo_root) or ""
     prefix, _, suffix = extract_prompt_block(existing_raw)
     existing_notes = parse_notes(existing_raw)
 
-    all_notes = existing_notes + [new_note]
+    if not session_data:
+        if existing_notes and (exclude_patterns or getattr(args, "drop_last", 0)):
+            # Retroactively drop or prune existing note without needing an active session transcript
+            all_notes = existing_notes
+            session_id = existing_notes[-1].session_id
+            target_prompts = []
+        else:
+            sys.stderr.write("No matching agent session transcript found.\n")
+            return 1
+    else:
+        harness, def_model = get_agent_identity()
+        model = session_data.get("detected_model") or def_model
+        session_id = session_data["session_id"]
+        all_prompts: List[PromptEntry] = session_data.get("prompts", [])
+
+        commit_sort_ts = parse_timestamp_sort_key(commit_date_utc)
+        target_prompts = []
+
+        for p in all_prompts:
+            pts = parse_timestamp_sort_key(p.timestamp)
+            if pts <= commit_sort_ts:
+                target_prompts.append(p)
+
+        if not target_prompts and all_prompts:
+            # Fallback to all session prompts if commit timestamp slightly precedes prompt log
+            target_prompts = list(all_prompts)
+
+        if exclude_patterns:
+            target_prompts = [
+                p for p in target_prompts
+                if not any(_safe_search(pat, p.text) for pat in exclude_patterns)
+            ]
+
+        if getattr(args, "drop_last", 0) and args.drop_last > 0:
+            target_prompts = target_prompts[:-args.drop_last]
+
+        # Sort reverse-chronologically so causal prompt is at the top
+        target_prompts.sort(key=lambda p: parse_timestamp_sort_key(p.timestamp), reverse=True)
+
+        new_note = SessionNote(
+            session_id=session_id,
+            harness=harness,
+            model=model,
+            recorded_at=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            prompts=target_prompts,
+        )
+
+        all_notes = existing_notes + [new_note]
+
     merged = merge_session_notes(all_notes)
+
+    # Prune any prompts matching exclude patterns across all merged notes
+    if exclude_patterns:
+        pruned_merged: List[SessionNote] = []
+        for n in merged:
+            kept_prompts = [
+                p for p in n.prompts
+                if not any(_safe_search(pat, p.text) for pat in exclude_patterns)
+            ]
+            if kept_prompts:
+                pruned_merged.append(
+                    SessionNote(
+                        session_id=n.session_id,
+                        harness=n.harness,
+                        model=n.model,
+                        recorded_at=n.recorded_at,
+                        prompts=kept_prompts,
+                    )
+                )
+        merged = pruned_merged
+
+    if not session_data and getattr(args, "drop_last", 0) and args.drop_last > 0:
+        if merged and merged[-1].prompts:
+            merged[-1].prompts = merged[-1].prompts[args.drop_last:]
+            if not merged[-1].prompts:
+                merged.pop()
+
     serialized_prompts = serialize_notes(merged)
-    final_note = wrap_prompt_block(serialized_prompts, prefix=prefix, suffix=suffix)
+    if serialized_prompts:
+        final_note = wrap_prompt_block(serialized_prompts, prefix=prefix, suffix=suffix)
+    elif prefix or suffix:
+        final_note = (prefix.rstrip() + "\n\n" + suffix.lstrip()).strip()
+    else:
+        final_note = ""
 
     if getattr(args, "edit", False):
         editor = os.environ.get("GIT_EDITOR") or os.environ.get("EDITOR") or "nano"
@@ -687,13 +780,20 @@ def cmd_record(args: argparse.Namespace) -> int:
 
     if args.dry_run:
         print(f"--- Prompt Note for {commit_hash[:8]} ---")
-        print(final_note.strip())
+        print(final_note.strip() if final_note.strip() else "(empty / removed)")
+        return 0
+
+    if not final_note.strip():
+        remove_note_content(commit_hash, ref=ref, repo_root=repo_root)
+        if not getattr(args, "quiet", False):
+            print(f"Removed prompt note on {commit_hash[:8]}")
         return 0
 
     success = write_note_content(commit_hash, final_note, ref=ref, repo_root=repo_root)
     if success:
         if not getattr(args, "quiet", False):
-            print(f"Recorded prompt note on {commit_hash[:8]} ({len(target_prompts)} prompts in session {session_id[:8]})")
+            prompt_count = len(target_prompts) if session_data else sum(len(n.prompts) for n in merged)
+            print(f"Recorded prompt note on {commit_hash[:8]} ({prompt_count} prompts in session {session_id[:8]})")
         return 0
     return 1
 
@@ -1538,7 +1638,9 @@ def cmd_uninstall_hook(args: argparse.Namespace) -> int:
     if getattr(args, "all", False) or getattr(args, "with_config", False):
         for key in ("notes.rewrite.rebase", "notes.rewrite.amend", "notes.rewriteRef"):
             run_git(["config", "--unset", key], repo_root=repo_root)
-        print("Cleaned local git config (notes.rewrite*)")
+        for key in ("prompt-log.exclude", "prompt-note.exclude"):
+            run_git(["config", "--unset-all", key], repo_root=repo_root)
+        print("Cleaned local git config (notes.rewrite*, prompt-log.exclude)")
 
     if getattr(args, "all", False) or getattr(args, "with_skill", False):
         for folder_name in ("git-prompt-log", "git-prompt-note", "agy-prompt-note"):

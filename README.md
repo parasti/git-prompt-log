@@ -144,11 +144,25 @@ Retraction and steering can be combined into a single message:
 [ignore-last] Actually, implement this instead...
 ```
 
+### Always-Skip Patterns (Configuration)
+
+To permanently and automatically skip routine recurring prompts (such as `"Commit"`, `"push"`, or short housekeeping directives) across all recordings without needing manual prefixes:
+
+```bash
+# Add an exclusion pattern for the current repository
+git config --add prompt-log.exclude "^(?i)commit$"
+
+# Or configure globally across all repositories
+git config --global --add prompt-log.exclude "^(?i)commit$"
+```
+
+Any prompt matching a configured `prompt-log.exclude` regex will be automatically omitted from prompt notes by both the post-commit hook and `git prompt-log record`.
+
 ### Manual Filtering & Editing
 
-Prompts can also be filtered or modified via the CLI:
+Prompts can also be filtered or modified retroactively via the CLI:
 
-- `git prompt-log record --drop "<pattern>"`: Exclude prompts matching a regex pattern.
+- `git prompt-log record --drop "<pattern>"`: Exclude prompts matching a regex pattern (works on existing notes or new recordings).
 - `git prompt-log record --drop-last <N>`: Drop the last *N* prompts before recording.
 - `git prompt-log edit HEAD`: Open the note in `$EDITOR` for manual editing.
 

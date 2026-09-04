@@ -88,12 +88,25 @@ When asked to edit or modify a recorded note directly:
 git prompt-log edit HEAD
 ```
 
-### Accidental Prompt Retraction (Parallel Sessions)
-When asked how to prevent or remove accidental prompts across parallel agent sessions, instruct or apply these markers:
+### Always-Skip Patterns (Git Config)
+To permanently and automatically skip routine recurring prompts (e.g. routine `"Commit"` commands) across all recordings without needing manual prefixes:
+```bash
+# Add an exclusion pattern for the current repository
+git config --add prompt-log.exclude "^(?i)commit$"
+
+# Or configure globally across all repositories
+git config --global --add prompt-log.exclude "^(?i)commit$"
+```
+Any prompt matching any configured `prompt-log.exclude` regex will be automatically omitted from prompt notes by both the post-commit hook and `git prompt-log record`.
+
+### Accidental Prompt Retraction & Retroactive Pruning
+When asked how to prevent, retract, or remove accidental prompts:
 * **Tag on input:** Prefix prompts with `[ignore]`, `[skip]`, `[wrong-session]`, or `[scratch]` to exclude them from being recorded.
 * **Retract previous prompt:** Send `[ignore-last]` (or `[retract]`, `[wrong-session]`) to drop the preceding prompt.
 * **Retract multiple prompts:** Send `[ignore-last N]` (e.g. `[ignore-last 2]`) or `[ignore-all]`.
 * **Retract and steer in one turn:** `[ignore-last] Actually, do this instead...`.
+* **Retroactive drop on existing notes:** Run `git prompt-log record --drop "<pattern>"` (optionally targeting a specific commit with `--commit <SHA>`).
+* **Manual note edit:** Run `git prompt-log edit HEAD` (or `<SHA>`) to edit notes directly in `$EDITOR`.
 
 ### Sharing Notes (Export & Import Only)
 Prompt notes must never be pushed directly via `refs/notes/*`. Prompt notes are shared across remotes exclusively via markdown logs:

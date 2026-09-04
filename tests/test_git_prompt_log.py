@@ -703,6 +703,29 @@ class TestPromptExclusionAndRetraction(unittest.TestCase):
         prompts = [p.text for p in data["prompts"]]
         self.assertEqual(prompts, ["Ignore previous compiler warnings and proceed with build"])
 
+    def test_custom_exclusion_patterns(self):
+        self._write_transcript([
+            "Implement initial parser",
+            "Commit",
+            "Refactor AST node types",
+            "commit changes please",
+            "commit",
+        ])
+        # With custom pattern "^(?i)commit$" only standalone "Commit" / "commit" are ignored
+        data = gpn.parse_session_transcript(self.transcript_file, custom_patterns=[r"^(?i)commit$"])
+        self.assertIsNotNone(data)
+        prompts = [p.text for p in data["prompts"]]
+        self.assertEqual(prompts, [
+            "Implement initial parser",
+            "Refactor AST node types",
+            "commit changes please",
+        ])
+
+        # is_ignored_prompt check
+        self.assertTrue(gpn.is_ignored_prompt("Commit", [r"^(?i)commit$"]))
+        self.assertTrue(gpn.is_ignored_prompt("commit", [r"^(?i)commit$"]))
+        self.assertFalse(gpn.is_ignored_prompt("Fix commit parser bug", [r"^(?i)commit$"]))
+
 
 class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
     def setUp(self):
@@ -1024,6 +1047,53 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         )
         self.assertNotIn("\033[33m", out_no_color)
         self.assertNotIn("\033[36m", out_no_color)
+
+    def test_always_skip_configured_exclude_pattern_and_retroactive_drop(self):
+        # 1. Configure git exclude pattern
+        subprocess.run(["git", "config", "--add", "prompt-log.exclude", r"^(?i)commit$"], cwd=self.repo_dir, check=True)
+        patterns = gpn.get_configured_exclude_patterns(self.repo_dir)
+        self.assertIn(r"^(?i)commit$", patterns)
+
+        # 2. Append real prompt followed by routine "Commit" prompt
+        self._append_prompt("Implement user authentication", "2026-09-04T10:00:00Z")
+        self._append_prompt("Commit", "2026-09-04T10:01:00Z")
+        sha1 = self._commit("auth.py", "def login(): pass", "feat: Add login")
+
+        # 3. Post-commit hook recorded note: verify "Commit" was automatically skipped
+        raw1 = gpn.get_note_content(sha1, repo_root=self.repo_dir)
+        self.assertIsNotNone(raw1)
+        notes1 = gpn.parse_notes(raw1)
+        self.assertEqual(len(notes1), 1)
+        prompts1 = [p.text for p in notes1[0].prompts]
+        self.assertEqual(prompts1, ["Implement user authentication"])
+
+        # 4. Append next prompt followed by another routine "commit"
+        self._append_prompt("Add unit tests for auth", "2026-09-04T10:05:00Z")
+        self._append_prompt("commit", "2026-09-04T10:06:00Z")
+        sha2 = self._commit("test_auth.py", "def test_login(): pass", "test: Add auth tests")
+
+        raw2 = gpn.get_note_content(sha2, repo_root=self.repo_dir)
+        self.assertIsNotNone(raw2)
+        notes2 = gpn.parse_notes(raw2)
+        prompts2 = [p.text for p in notes2[0].prompts]
+        # Cumulative history contains both feature prompts, neither "Commit" prompt
+        self.assertEqual(prompts2, ["Add unit tests for auth", "Implement user authentication"])
+
+        # 5. Test CLI retroactive drop on existing commit notes:
+        # Purge "Add unit tests for auth" from sha2 note using git prompt-log record --drop
+        cmd = ["python3", str(Path(gpn.__file__).resolve()), "record", "--commit", sha2, "--drop", r"Add unit tests"]
+        subprocess.run(cmd, cwd=self.repo_dir, check=True, env=self.env)
+
+        raw2_updated = gpn.get_note_content(sha2, repo_root=self.repo_dir)
+        notes2_updated = gpn.parse_notes(raw2_updated)
+        prompts2_updated = [p.text for p in notes2_updated[0].prompts]
+        self.assertEqual(prompts2_updated, ["Implement user authentication"])
+
+        # 6. Test uninstall-hook --all cleans prompt-log.exclude
+        uninstall_cmd = ["python3", str(Path(gpn.__file__).resolve()), "uninstall-hook", "--all"]
+        subprocess.run(uninstall_cmd, cwd=self.repo_dir, check=True)
+        patterns_after = gpn.get_configured_exclude_patterns(self.repo_dir)
+        self.assertEqual(patterns_after, [])
 
 
 if __name__ == "__main__":
