@@ -18,7 +18,59 @@ cd git-prompt-log
 
 `./install.sh` installs the binary into `~/.local/bin/` and prompts before making any global Git or assistant configuration changes.
 
-### Enable in a Repository
+### Quickstart: Try It On This Repo
+
+`git-prompt-log` is built and developed using `git-prompt-log`. Since Git notes are not cloned by default, import our exported prompt log to inspect the real prompts that built this codebase:
+
+```bash
+# In the cloned git-prompt-log directory:
+git prompt-log init
+git prompt-log import-log prompts/git-prompt-log.md
+
+# View the commit history with prompt timelines in rich color:
+git prompt-log log
+```
+
+You can view the causal prompt on each commit, or pass `--full` to view the cumulative prompt history:
+
+```bash
+git prompt-log log --full
+```
+
+### The Day-to-Day Workflow
+
+In practice, **you will almost never run `record` yourself**. Once enabled in a repository, `git-prompt-log` works completely automatically in the background:
+
+1. **Prompt and commit naturally:** When your coding assistant (e.g. Google Antigravity, Claude Code) authors a commit, the `.git/hooks/post-commit` hook automatically detects the active session, extracts the steering prompt that guided the work, and attaches it as a git note. Regular human commits are unaffected.
+2. **Rebasing and squashing just work:** When you rebase, squash, or amend commits, Git invokes the `.git/hooks/post-rewrite` hook, which automatically preserves and merges prompt chains in reverse-chronological order.
+3. **Inspect anytime:**
+   ```bash
+   # View recent commits and their active steering prompts:
+   git prompt-log log
+
+   # Standard git log also includes prompt notes:
+   git log -n 1
+   ```
+
+### Pull Requests & Collaboration (Export & Import)
+
+Because Git notes are not pushed or fetched by default during standard `git push` or GitHub PR workflows:
+
+1. **Export for PR Review:** Before opening a PR, package the accumulated prompt notes into a Markdown log on your branch:
+   ```bash
+   git prompt-log export-log --commit
+   ```
+   This writes `prompts/YYYY_MM_DD_HHMMSS_<slug>.md` and commits it to your branch, giving reviewers full visibility into your prompt history alongside code diffs.
+
+2. **Re-hydrate on Merge (Maintainer):** When the PR merges into `main` (even if squashed or rebased via GitHub's web UI), restore the notes on `main`:
+   ```bash
+   git prompt-log import-log prompts/YYYY_MM_DD_HHMMSS_<slug>.md
+   ```
+   The tool matches commits by commit subject or hash and re-attaches prompt provenance into `refs/notes/commits`.
+
+### Enable in Any Repository
+
+To enable prompt logging in any other project:
 
 ```bash
 cd my-project
@@ -27,38 +79,10 @@ git prompt-log init
 
 This single command:
 1. Installs `.git/hooks/post-commit` to record prompts when an assistant commits (no-op during human commits; skip with `--no-post-commit`).
-2. Installs `.git/hooks/post-rewrite` so Git automatically invokes note reconciliation on rebase/squash.
+2. Installs `.git/hooks/post-rewrite` so Git automatically reconciles notes on rebase/squash.
 3. Configures repository-scoped Git notes rewriting (`notes.rewrite.rebase = true`, `notes.rewriteRef = refs/notes/commits`).
 
 *(Optional: pass `--skill` to also install the repository assistant skill at `.agents/skills/git-prompt-log/SKILL.md`).*
-
-### Workflow
-
-1. **Record Notes:** When an assistant authors a commit, the post-commit hook automatically detects the agent and records the prompt note. You can also record manually at any time:
-   ```bash
-   git prompt-log record
-   ```
-
-2. **Inspect Notes:** View notes natively in standard Git or via `git-prompt-log`:
-   ```bash
-   # Standard git log
-   git log -n 1
-
-   # Formatted note view
-   git prompt-log show HEAD
-   ```
-
-3. **Export for Pull Requests:** Package accumulated prompt notes into a reviewable log commit before opening a PR:
-   ```bash
-   git prompt-log export-log --commit
-   ```
-   This writes `prompts/YYYY_MM_DD_HHMMSS_<slug>.md` and commits it to the branch so reviewers can inspect the prompt timeline in the PR diff.
-
-4. **Upstream Re-hydration (Maintainer):** When the PR lands on `main` (even if squashed or rebased in GitHub's web UI), re-hydrate the notes on `main`:
-   ```bash
-   git prompt-log import-log prompts/YYYY_MM_DD_feature.md
-   ```
-   The tool matches commits by exact hash or commit subject and attaches prompt provenance back to `refs/notes/commits`.
 
 ---
 
