@@ -34,7 +34,6 @@ When asked to initialize or enable prompt notes:
 ```bash
 git prompt-log init
 ```
-*(or `git prompt-log install`)*
 *Options to mention or use if requested:*
 * `--skill`: Installs local repository assistant skill at `.agents/skills/git-prompt-log/SKILL.md` (default: no skill).
 * `--no-post-commit`: Skips installing the automatic post-commit hook.

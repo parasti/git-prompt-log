@@ -2397,12 +2397,11 @@ When running multiple agent sessions in parallel across different projects, acci
 ## CLI Reference
 
 ```bash
-# Initialize / install in a repository (hooks, local git config; default: no skill)
-git prompt-log install
-# (or git prompt-log init)
+# Initialize in a repository (hooks, local git config; default: no skill)
+git prompt-log init
 
-# Install with local repository assistant skill
-git prompt-log install --skill
+# Initialize with local repository assistant skill
+git prompt-log init --skill
 
 # Uninstall hooks
 git prompt-log uninstall-hook
@@ -2470,8 +2469,8 @@ def _install_hook_file(hook_path: Path, hook_cmd: str, comment_title: str):
         print(f"Created executable hook at {hook_path}")
 
 
-def cmd_install_hook(args: argparse.Namespace) -> int:
-    """Installs post-rewrite and post-commit hooks and configures git rewrite settings."""
+def cmd_init(args: argparse.Namespace) -> int:
+    """Initializes git-prompt-log in current repository (hooks, config, optional skill)."""
     repo_root = get_repo_root()
     common_git = get_common_git_dir(repo_root)
     hooks_dir = common_git / "hooks"
@@ -2494,14 +2493,14 @@ def cmd_install_hook(args: argparse.Namespace) -> int:
     run_git(["config", "notes.rewriteRef", args.ref], repo_root=repo_root)
     print(f"Git configured: notes.rewriteRef = {args.ref}")
 
-    # 4. Explicitly configure default assistant harness / adapter if requested
-    harness_arg = getattr(args, "harness", None) or getattr(args, "adapter", None)
+    # 4. Explicitly configure default assistant harness if requested
+    harness_arg = getattr(args, "harness", None)
     if harness_arg and harness_arg != "auto":
         target = "manual" if harness_arg == "direct" else harness_arg
         run_git(["config", "prompt-log.harness", target], repo_root=repo_root)
         print(f"Git configured: prompt-log.harness = {target}")
 
-    # 5. If called via 'init' and with_skill is true, install local repository skill
+    # 5. If with_skill is true, install local repository skill
     if getattr(args, "with_skill", False):
         skill_target = repo_root / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
         skill_target.parent.mkdir(parents=True, exist_ok=True)
@@ -2514,6 +2513,10 @@ def cmd_install_hook(args: argparse.Namespace) -> int:
         print(f"Installed local agent skill at {skill_target.relative_to(repo_root)}")
 
     return 0
+
+
+# Internal alias
+cmd_install_hook = cmd_init
 
 
 def _uninstall_hook_file(hook_path: Path) -> bool:
@@ -2671,7 +2674,6 @@ def main():
     )
     p_init.add_argument(
         "--harness",
-        "--adapter",
         "-a",
         choices=["antigravity", "claude", "manual", "auto"],
         default=None,
@@ -2758,42 +2760,6 @@ def main():
     p_edit = subparsers.add_parser("edit", help="Edit prompt note on a commit in $EDITOR", parents=[base_parser])
     p_edit.add_argument("commit", nargs="?", default="HEAD", help="Target commit hash or ref (default: HEAD)")
 
-    # install / install-hook
-    p_install = subparsers.add_parser(
-        "install",
-        aliases=["install-hook", "install-hooks"],
-        help="Install git-prompt-log in current repository (hooks, config)",
-        parents=[base_parser],
-    )
-    p_install.add_argument(
-        "--skill",
-        dest="with_skill",
-        action="store_true",
-        default=False,
-        help="Install local repository assistant skill at .agents/skills/git-prompt-log/SKILL.md",
-    )
-    p_install.add_argument(
-        "--no-skill",
-        dest="with_skill",
-        action="store_false",
-        help="Do not install local repository assistant skill (default)",
-    )
-    p_install.add_argument(
-        "--harness",
-        "--adapter",
-        "-a",
-        choices=["antigravity", "claude", "manual", "auto"],
-        default=None,
-        help="Explicitly configure default assistant harness",
-    )
-    p_install.add_argument(
-        "--no-post-commit",
-        dest="with_post_commit",
-        action="store_false",
-        default=True,
-        help="Skip installing post-commit hook for automated agent prompt recording",
-    )
-
     # uninstall-hook
     p_uninstall = subparsers.add_parser(
         "uninstall-hook",
@@ -2842,8 +2808,8 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command in ("init", "install", "install-hook", "install-hooks"):
-        sys.exit(cmd_install_hook(args))
+    if args.command == "init":
+        sys.exit(cmd_init(args))
     elif args.command in ("uninstall-hook", "uninstall", "uninstall-hooks"):
         sys.exit(cmd_uninstall_hook(args))
     elif args.command == "record":

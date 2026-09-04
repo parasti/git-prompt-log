@@ -22,8 +22,7 @@ cd git-prompt-log
 
 ```bash
 cd my-project
-git prompt-log install
-# (or git prompt-log init)
+git prompt-log init
 ```
 
 This single command:

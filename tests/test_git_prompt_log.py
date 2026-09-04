@@ -239,10 +239,10 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         self.assertEqual(parsed[0].prompts[0].text, "Create file 2")
         self.assertEqual(parsed[0].prompts[1].text, "Create file 1")
 
-    def test_install_hook_installs_hooks_by_default(self):
+    def test_init_installs_hooks_by_default(self):
         script_path = Path(gpn.__file__).resolve()
         res = subprocess.run(
-            ["python3", str(script_path), "install-hook"],
+            ["python3", str(script_path), "init"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -260,10 +260,10 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
         self.assertFalse(skill_file.exists())
 
-    def test_install_hook_no_post_commit(self):
+    def test_init_no_post_commit(self):
         script_path = Path(gpn.__file__).resolve()
         res = subprocess.run(
-            ["python3", str(script_path), "install-hook", "--no-post-commit"],
+            ["python3", str(script_path), "init", "--no-post-commit"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -274,10 +274,10 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         self.assertTrue((hooks_dir / "post-rewrite").exists())
         self.assertFalse((hooks_dir / "post-commit").exists())
 
-    def test_install_subcommand_defaults_to_no_skill(self):
+    def test_init_subcommand_defaults_to_no_skill(self):
         script_path = Path(gpn.__file__).resolve()
         res = subprocess.run(
-            ["python3", str(script_path), "install"],
+            ["python3", str(script_path), "init"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -291,10 +291,10 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
         self.assertFalse(skill_file.exists())
 
-    def test_install_subcommand_with_skill(self):
+    def test_init_subcommand_with_skill(self):
         script_path = Path(gpn.__file__).resolve()
         res = subprocess.run(
-            ["python3", str(script_path), "install", "--skill"],
+            ["python3", str(script_path), "init", "--skill"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -305,7 +305,7 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         self.assertTrue(skill_file.exists())
         self.assertIn("git-prompt-log", skill_file.read_text(encoding="utf-8"))
 
-    def test_install_migrates_legacy_hooks(self):
+    def test_init_migrates_legacy_hooks(self):
         hooks_dir = self.repo_dir / ".git" / "hooks"
         hooks_dir.mkdir(parents=True, exist_ok=True)
         legacy_post_commit = hooks_dir / "post-commit"
@@ -314,7 +314,7 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
 
         script_path = Path(gpn.__file__).resolve()
         res = subprocess.run(
-            ["python3", str(script_path), "install"],
+            ["python3", str(script_path), "init"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -413,7 +413,7 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
 
     def test_uninstall_hook_all(self):
         script_path = Path(gpn.__file__).resolve()
-        subprocess.run(["python3", str(script_path), "install", "--skill"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["python3", str(script_path), "init", "--skill"], cwd=self.repo_dir, check=True, capture_output=True)
         hooks_dir = self.repo_dir / ".git" / "hooks"
         skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
         self.assertTrue(skill_file.exists())
