@@ -1197,11 +1197,12 @@ class TestIngestionAdapters(unittest.TestCase):
         names = [a.name for a in adapters]
         self.assertIn("antigravity", names)
         self.assertIn("claude", names)
-        self.assertIn("direct", names)
+        self.assertIn("manual", names)
 
         self.assertIsInstance(gpn.REGISTRY.get("antigravity"), gpn.AntigravityAdapter)
         self.assertIsInstance(gpn.REGISTRY.get("claude"), gpn.ClaudeCodeAdapter)
-        self.assertIsInstance(gpn.REGISTRY.get("direct"), gpn.DirectAdapter)
+        self.assertIsInstance(gpn.REGISTRY.get("manual"), gpn.ManualAdapter)
+        self.assertIsInstance(gpn.REGISTRY.get("direct"), gpn.ManualAdapter)
 
     def test_claude_adapter_parsing_jsonl(self):
         transcript = self.work_dir / "claude-session.jsonl"
@@ -1236,19 +1237,19 @@ class TestIngestionAdapters(unittest.TestCase):
         prompts = [p.text for p in parsed["prompts"]]
         self.assertEqual(prompts, ["First user message", "Second user message"])
 
-    def test_direct_adapter_manual_recording(self):
-        adapter = gpn.DirectAdapter()
+    def test_manual_adapter_recording(self):
+        adapter = gpn.ManualAdapter()
         parsed = adapter.find_session_data(
             session_id="manual-test-session",
             extra_options={"message": "Manual steer without transcript file"},
         )
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["session_id"], "manual-test-session")
-        self.assertEqual(parsed["harness"], "Direct CLI")
+        self.assertEqual(parsed["harness"], "Manual")
         self.assertEqual(len(parsed["prompts"]), 1)
         self.assertEqual(parsed["prompts"][0].text, "Manual steer without transcript file")
 
-    def test_direct_record_cli_and_adapters_subcommand(self):
+    def test_manual_record_cli_and_adapters_subcommand(self):
         repo_dir = self.work_dir / "test_repo"
         repo_dir.mkdir()
         subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
@@ -1268,10 +1269,10 @@ class TestIngestionAdapters(unittest.TestCase):
         data = json.loads(res.stdout)
         self.assertIn("adapters", data)
         adapter_names = [a["name"] for a in data["adapters"]]
-        self.assertIn("direct", adapter_names)
+        self.assertIn("manual", adapter_names)
         self.assertIn("claude", adapter_names)
 
-        # 2. Record direct prompt with -m and custom harness/model
+        # 2. Record manual prompt with -m and custom harness/model
         cmd_rec = [
             "python3",
             script_path,

@@ -194,7 +194,7 @@ Prompts can also be filtered or modified retroactively via the CLI:
 
 ---
 
-## Ingestion Adapters & Direct Recording
+## Ingestion Adapters & Manual Recording
 
 `git-prompt-log` features a pluggable adapter architecture to ingest prompts from different coding agent harnesses or manual human entry:
 
@@ -202,7 +202,7 @@ Prompts can also be filtered or modified retroactively via the CLI:
 | :--- | :--- | :--- |
 | `antigravity` | Google Antigravity CLI | `$AGY_SESSION_ID`, `$ANTIGRAVITY_CONVERSATION_ID`, `brain/` |
 | `claude` | Claude Code | `$CLAUDE_SESSION_ID`, `~/.claude/projects/`, `$CLAUDE_TRANSCRIPT_PATH` |
-| `direct` | Human / Manual Entry | `-m / --message "..."` or `--stdin` |
+| `manual` | Manual Entry | `-m / --message "..."` or `--stdin` |
 
 ### Inspecting Adapters
 
@@ -213,12 +213,12 @@ git prompt-log adapters
 git prompt-log adapters --json
 ```
 
-### Direct Prompt Recording (Human or Scripted)
+### Manual Prompt Recording (Human or Scripted)
 
-For commits authored directly by humans or piped from external scripts:
+For commits authored manually by humans or piped from external scripts:
 
 ```bash
-# Record prompt directly on HEAD
+# Record prompt manually on HEAD
 git prompt-log record -m "Implement OAuth authentication flow"
 
 # Pipe prompt via standard input

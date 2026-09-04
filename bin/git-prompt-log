@@ -1036,9 +1036,9 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
         return None
 
 
-class DirectAdapter(BaseIngestionAdapter):
-    name = "direct"
-    display_name = "Direct / Manual Entry"
+class ManualAdapter(BaseIngestionAdapter):
+    name = "manual"
+    display_name = "Manual Entry"
 
     def is_active(self, repo_root: Optional[Path] = None) -> bool:
         return False
@@ -1047,7 +1047,7 @@ class DirectAdapter(BaseIngestionAdapter):
         return None
 
     def get_agent_identity(self, detected_model: Optional[str] = None) -> Tuple[str, str]:
-        return "Direct CLI", detected_model or "Manual"
+        return "Manual", detected_model or "Manual"
 
     def find_session_data(
         self,
@@ -1068,16 +1068,20 @@ class DirectAdapter(BaseIngestionAdapter):
         if not prompts:
             return None
 
-        sid = session_id or f"direct-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+        sid = session_id or f"manual-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
         if apply_session_excludes:
             prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
 
         return {
             "session_id": sid,
             "detected_model": "Manual",
-            "harness": "Direct CLI",
+            "harness": "Manual",
             "prompts": prompts,
         }
+
+
+# Backward compatibility alias
+DirectAdapter = ManualAdapter
 
 
 class AdapterRegistry:
@@ -1093,6 +1097,8 @@ class AdapterRegistry:
             self._order.append(adapter.name)
 
     def get(self, name: str) -> Optional[BaseIngestionAdapter]:
+        if name == "direct":
+            return self._adapters.get("manual")
         return self._adapters.get(name)
 
     def list_adapters(self) -> List[BaseIngestionAdapter]:
@@ -1106,7 +1112,7 @@ class AdapterRegistry:
         if preferred_name and preferred_name != "auto":
             return self.get(preferred_name)
         for name in self._order:
-            if name == "direct":
+            if name == "manual":
                 continue
             adapter = self._adapters[name]
             if adapter.is_active(repo_root=repo_root):
@@ -1138,9 +1144,9 @@ class AdapterRegistry:
             return None, None
 
         if extra_options and extra_options.get("message"):
-            direct = self.get("direct")
-            if direct:
-                data = direct.find_session_data(
+            manual = self.get("manual")
+            if manual:
+                data = manual.find_session_data(
                     session_id=session_id,
                     repo_root=repo_root,
                     max_age_seconds=max_age_seconds,
@@ -1149,7 +1155,7 @@ class AdapterRegistry:
                     extra_options=extra_options,
                 )
                 if data:
-                    return direct, data
+                    return manual, data
 
         active = self.detect_active_adapter(repo_root=repo_root)
         if active:
@@ -1166,7 +1172,7 @@ class AdapterRegistry:
             return None, None
 
         for name in self._order:
-            if name == "direct":
+            if name == "manual":
                 continue
             adapter = self._adapters[name]
             data = adapter.find_session_data(
@@ -1186,7 +1192,7 @@ class AdapterRegistry:
 REGISTRY = AdapterRegistry()
 REGISTRY.register(AntigravityAdapter())
 REGISTRY.register(ClaudeCodeAdapter())
-REGISTRY.register(DirectAdapter())
+REGISTRY.register(ManualAdapter())
 
 
 def get_agent_identity() -> Tuple[str, str]:
@@ -1352,7 +1358,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         commit_sort_ts = parse_timestamp_sort_key(commit_date_utc)
         target_prompts = []
 
-        if adapter and adapter.name == "direct":
+        if adapter and adapter.name in ("manual", "direct"):
             target_prompts = list(all_prompts)
         else:
             for p in all_prompts:
@@ -2567,12 +2573,12 @@ def main():
     p_record.add_argument(
         "--adapter",
         "-a",
-        choices=["auto", "antigravity", "claude", "direct"],
+        choices=["auto", "antigravity", "claude", "manual", "direct"],
         default="auto",
-        help="Ingestion adapter (auto, antigravity, claude, direct)",
+        help="Ingestion adapter (auto, antigravity, claude, manual)",
     )
-    p_record.add_argument("--message", "-m", help="Directly record prompt text without transcript")
-    p_record.add_argument("--stdin", action="store_true", help="Read direct prompt text from standard input")
+    p_record.add_argument("--message", "-m", help="Manually record prompt text without transcript")
+    p_record.add_argument("--stdin", action="store_true", help="Read manual prompt text from standard input")
     p_record.add_argument("--harness", help="Override harness name string in note")
     p_record.add_argument("--model", help="Override model name string in note")
     p_record.add_argument("--exclude", "--drop", help="Exclude prompts matching regex pattern")
