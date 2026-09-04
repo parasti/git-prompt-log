@@ -613,6 +613,46 @@ class TestExportAndImportLog(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertEqual(notes[0].prompts[0].text, "Steer feature")
 
+    def test_export_multiple_sessions_header_paragraph_breaks(self):
+        self._commit("base.txt", "base", "chore: initial base")
+        sha1 = self._commit("file_s1.txt", "s1", "feat: Session 1 commit")
+        note1 = gpn.SessionNote(
+            session_id="session-alpha-1111",
+            harness="Antigravity CLI 1.1.26",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:00:00 UTC",
+            prompts=[gpn.PromptEntry("2026-09-04 00:59:00", "Prompt alpha")],
+        )
+        gpn.write_note_content(sha1, note1.format(), repo_root=self.repo_dir)
+
+        sha2 = self._commit("file_s2.txt", "s2", "feat: Session 2 commit")
+        note2 = gpn.SessionNote(
+            session_id="session-beta-2222",
+            harness="Claude Code",
+            model="Claude 3.5 Sonnet",
+            recorded_at="2026-09-04 02:00:00 UTC",
+            prompts=[gpn.PromptEntry("2026-09-04 01:59:00", "Prompt beta")],
+        )
+        gpn.write_note_content(sha2, note2.format(), repo_root=self.repo_dir)
+
+        out_file = self.repo_dir / "prompts" / "multi_session_export.md"
+        script_path = Path(gpn.__file__).resolve()
+        res = subprocess.run(
+            ["python3", str(script_path), "export-log", "--output", str(out_file), "--range", "HEAD~2..HEAD"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+        content = out_file.read_text(encoding="utf-8")
+        self.assertIn("- **Session:** `session-alpha-1111`", content)
+        self.assertIn("- **Session:** `session-beta-2222`", content)
+        expected_separator = (
+            "- **Model:** Gemini 3.8 Flash (High)\n\n"
+            "- **Session:** `session-beta-2222`"
+        )
+        self.assertIn(expected_separator, content)
+
 
 class TestPromptExclusionAndRetraction(unittest.TestCase):
     def setUp(self):

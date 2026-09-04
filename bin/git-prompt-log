@@ -1781,6 +1781,7 @@ def cmd_export_log(args: argparse.Namespace) -> int:
     lines.append("")
     lines.append(f"- **Exported:** {ts_human}")
     for s in merged_sessions:
+        lines.append("")
         lines.append(f"- **Session:** `{s.session_id}`")
         lines.append(f"- **Harness:** {s.harness}")
         lines.append(f"- **Model:** {s.model}")
