@@ -70,12 +70,12 @@ Git notes are not pushed or fetched by default during standard `git push` or Git
 
 ### Why Export and Import Instead of Pushing Notes?
 
-Git notes are ideal for local, non-invasive metadata storage, but pushing `refs/notes/*` directly to shared remotes creates friction that export and import solve:
+Git notes are ideal for local, non-invasive metadata storage, but pushing `refs/notes/*` directly to shared remotes creates several major problems that export and import solve:
 
-- **Visibility in Code Review:** Git notes are invisible in GitHub, GitLab, and Bitbucket pull request diffs and web interfaces. Exporting prompt notes to a Markdown file in `prompts/` ensures that your prompt timeline is reviewable right alongside the code diffs it generated.
-- **Surviving GitHub Squash & Rebase:** When a pull request is squashed or rebased via GitHub's web UI, GitHub generates brand new commit SHAs on `main`. Remote Git notes attached to branch commits are left behind and orphaned. Because the exported Markdown log is committed to the repository, maintainers can run `git prompt-log import-log` on `main` to match commits by subject and re-hydrate prompt provenance onto the new commits.
-- **No Ref Merge Conflicts:** Pushing and fetching `refs/notes/commits` across multiple contributors regularly triggers non-fast-forward rejections. Resolving Git note ref conflicts requires manual `git notes merge` steps that interrupt standard push/pull workflows. Exporting prompt files leverages standard Git file merging and review.
-- **Opt-in Local Namespaces:** Users who clone your repository to use or build the project do not have their local Git notes namespace cluttered or overwritten unless they explicitly choose to import prompt notes.
+1. **Privacy & Preventing Leaks:** Your local `refs/notes/commits` ref is repository-wide. It contains prompt notes for *all* local commits, including unpushed experiments, private feature branches, and sensitive queries you never intended to publish. Pushing the notes ref is an all-or-nothing operation that risks leaking private prompts. Exporting packages only the prompts for the specific branch and PR you intend to share.
+2. **PR Workflow Friction:** Pushing notes alongside branches is painful. You have to push both the branch and the notes ref (`git push origin my-branch refs/notes/*`), pull request interfaces have no concept of dual-ref submissions, and concurrent note pushes by teammates cause non-fast-forward rejections that require tedious `git notes merge` steps. With export, prompt history is just a standard file in your branch—one ordinary `git push` handles everything.
+3. **Invisibility:** Git notes are completely invisible in GitHub, GitLab, and Bitbucket pull request diffs and web interfaces. Reviewers cannot see the prompts that generated the code or leave comments on them. An exported Markdown file in `prompts/` lives directly in the PR diff alongside the code.
+4. **Surviving GitHub Squash & Rebase:** When a pull request is squashed or rebased via GitHub's web UI, GitHub generates brand new commit SHAs on `main`. Remote Git notes attached to your branch commits are left behind and orphaned. Because the exported Markdown log is committed to the repository, maintainers can run `git prompt-log import-log` on `main` to match commits by subject and re-hydrate prompt notes onto the new commits.
 
 ### Enable in Any Repository
 
