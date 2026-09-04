@@ -305,6 +305,25 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         self.assertTrue(skill_file.exists())
         self.assertIn("git-prompt-log", skill_file.read_text(encoding="utf-8"))
 
+    def test_install_migrates_legacy_hooks(self):
+        hooks_dir = self.repo_dir / ".git" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        legacy_post_commit = hooks_dir / "post-commit"
+        legacy_post_commit.write_text("#!/bin/sh\n# Git Prompt Note agent post-commit hook\ngit prompt-note post-commit --ref=\"refs/notes/commits\"\n")
+        legacy_post_commit.chmod(0o755)
+
+        script_path = Path(gpn.__file__).resolve()
+        res = subprocess.run(
+            ["python3", str(script_path), "install"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+        content = legacy_post_commit.read_text(encoding="utf-8")
+        self.assertIn("git prompt-log post-commit", content)
+        self.assertNotIn("git prompt-note", content)
+
     def test_post_commit_silent_when_no_agent_env(self):
         sha = self._commit("file.txt", "content", "Manual commit")
         script_path = Path(gpn.__file__).resolve()

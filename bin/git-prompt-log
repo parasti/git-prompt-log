@@ -1404,13 +1404,17 @@ def _install_hook_file(hook_path: Path, hook_cmd: str, comment_title: str):
     """Safely creates or appends to a git hook file."""
     if hook_path.exists():
         existing = hook_path.read_text(encoding="utf-8")
-        if (
-            "git prompt-log" in existing
-            or "git prompt-note" in existing
-            or "git_prompt_log.py" in existing
-            or "git_prompt_note.py" in existing
-        ):
+        if "git prompt-log" in existing:
             print(f"{hook_path.name} hook is already installed.")
+            return
+        elif "git prompt-note" in existing or "git_prompt_note.py" in existing:
+            # Upgrade legacy hook reference in place
+            migrated = existing.replace("git prompt-note", "git prompt-log")
+            migrated = migrated.replace("git_prompt_note.py", "git prompt-log")
+            migrated = migrated.replace("# Git Prompt Note", f"# {comment_title}")
+            hook_path.write_text(migrated, encoding="utf-8")
+            hook_path.chmod(0o755)
+            print(f"Migrated legacy hook to git-prompt-log in {hook_path.name}")
             return
         with open(hook_path, "a", encoding="utf-8") as f:
             f.write(f"\n# {comment_title}\n{hook_cmd}\n")
