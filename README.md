@@ -20,7 +20,7 @@ cd git-prompt-log
 
 ### Quickstart: Try It On This Repo
 
-`git-prompt-log` is built and developed using `git-prompt-log`. Since Git notes are not cloned by default (and should not be—prompt logs are shared via export/import; see [Why Export and Import Instead of Pushing Notes?](#why-export-and-import-instead-of-pushing-notes)), import our exported prompt log to inspect the real prompts that built this codebase:
+`git-prompt-log` is built and developed using `git-prompt-log`. Since Git notes are not cloned by default ([and should not be](#why-export-and-import-instead-of-pushing-notes)), import our exported prompt log to inspect the real prompts that built this codebase:
 
 ```bash
 # In the cloned git-prompt-log directory:
