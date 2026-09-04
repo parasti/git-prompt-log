@@ -110,19 +110,6 @@ This single command:
 
 ---
 
-## Motivation
-
-Very simply, sharing the source code alone is not cutting it for open source projects that use coding agents. The actual source code is now the combination of harness, model, code, and prompts entered by a human. Sharing these provides a level of transparency and opportunities to learn from each other.
-
-This idea went through a couple of iterations. The first iteration was a distillation of raw transcripts into Markdown files tracked in the repo, where the prompts would be preserved verbatim but the agent would summarize the events happening in between. That felt good until I realized that I never ever read what the agent has summarized. The second iteration still worked with Markdown files but tried to be more faithful to the transcript logs and documented the tool calls in between. And I still just skipped over those. It dawned on me that I only really cared about the prompts and the source code that resulted from those prompts. Then, upon discovering Git AI, a tool that promised to be exactly what I wanted but fell short in actual testing (not actually recording prompts being the big one), I proceeded with the third iteration.
-
-Some decisions:
-
-- Prompts are stored in `git notes`. This piggybacks on existing well-tested git infrastructure for managing notes and handles commit SHA changes.
-- Each commit holds the entire prompt chain that led to that commit. The chain is in reverse chronological order so the top prompt is always the causal prompt that resulted in the commit you're looking at.
-
----
-
 ## Note Schema
 
 ```text
