@@ -100,11 +100,58 @@ git push origin "refs/notes/*"
 
 ---
 
+## Accidental Prompts & Parallel Sessions
+
+When running multiple agent sessions in parallel across different projects, accidental prompts can be prevented or retracted using simple markers:
+
+1. **Tag an Accidental Prompt Directly:**
+   Prefix the prompt with `[ignore]`, `[skip]`, `[wrong-session]`, or `[scratch]`:
+   ```text
+   [wrong-session] Fix the audio mixer volume slider
+   ```
+   Such prompts are automatically excluded from prompt notes.
+
+2. **Retract an Already-Sent Accidental Prompt:**
+   If a prompt was sent by mistake, follow up in that same session with:
+   ```text
+   [ignore-last]
+   ```
+   (or `[wrong-session]`, `[ignore-prev]`, `[retract]`).
+   This drops the preceding accidental prompt (and drops the retraction marker).
+   To drop multiple accidental prompts: `[ignore-last 2]`.
+   To reset all prompts accumulated in the session: `[ignore-all]`.
+
+3. **Retract and Provide Real Prompt in One Turn:**
+   ```text
+   [ignore-last] Actually, fix the level select camera
+   ```
+   Drops the previous message and records only the intended prompt.
+
+4. **Filtering and Editing Notes:**
+   ```bash
+   # Exclude prompts matching a regex when recording
+   git prompt-note record --drop "audio mixer"
+
+   # Drop last prompt when recording
+   git prompt-note record --drop-last 1
+
+   # Edit recorded note interactively in $EDITOR
+   git prompt-note edit HEAD
+   ```
+
+---
+
 ## CLI Reference
 
 ```bash
 # Initialize in a repository (hooks, local git config, local skill)
 git prompt-note init
+
+# Uninstall hooks
+git prompt-note uninstall-hook
+
+# Completely remove hooks, git config, and local skill
+git prompt-note uninstall-hook --all
 
 # Record prompt note on HEAD (or --commit <hash>)
 git prompt-note record
@@ -114,6 +161,9 @@ git prompt-note record --dry-run
 
 # Show prompt note on a commit
 git prompt-note show [commit]
+
+# Edit prompt note on a commit in $EDITOR
+git prompt-note edit [commit]
 
 # Export branch prompt notes to a markdown log file
 git prompt-note export-log [--range <base>..HEAD] [--output <file>] [--commit]

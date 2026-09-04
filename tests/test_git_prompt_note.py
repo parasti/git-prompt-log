@@ -4,6 +4,7 @@
 Unit and integration tests for git_prompt_note.py.
 """
 
+import json
 import os
 import shutil
 import subprocess
@@ -330,6 +331,51 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         self.assertTrue((hooks_dir / "post-rewrite").exists())
         self.assertFalse((hooks_dir / "post-commit").exists())
 
+    def test_uninstall_hook_removes_both_hooks(self):
+        script_path = Path(gpn.__file__).resolve()
+        subprocess.run(["python3", str(script_path), "init"], cwd=self.repo_dir, check=True, capture_output=True)
+        hooks_dir = self.repo_dir / ".git" / "hooks"
+        self.assertTrue((hooks_dir / "post-rewrite").exists())
+        self.assertTrue((hooks_dir / "post-commit").exists())
+
+        res = subprocess.run(["python3", str(script_path), "uninstall-hook"], cwd=self.repo_dir, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertFalse((hooks_dir / "post-rewrite").exists())
+        self.assertFalse((hooks_dir / "post-commit").exists())
+
+    def test_uninstall_hook_all(self):
+        script_path = Path(gpn.__file__).resolve()
+        subprocess.run(["python3", str(script_path), "init"], cwd=self.repo_dir, check=True, capture_output=True)
+        hooks_dir = self.repo_dir / ".git" / "hooks"
+        skill_file = self.repo_dir / ".agents" / "skills" / "agy-prompt-note" / "SKILL.md"
+        self.assertTrue(skill_file.exists())
+
+        res = subprocess.run(["python3", str(script_path), "uninstall-hook", "--all"], cwd=self.repo_dir, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertFalse((hooks_dir / "post-rewrite").exists())
+        self.assertFalse((hooks_dir / "post-commit").exists())
+        self.assertFalse(skill_file.exists())
+
+        # Config should be unset
+        res_cfg = subprocess.run(["git", "config", "--local", "notes.rewriteRef"], cwd=self.repo_dir, capture_output=True)
+        self.assertNotEqual(res_cfg.returncode, 0)
+
+    def test_uninstall_hook_preserves_other_commands(self):
+        hooks_dir = self.repo_dir / ".git" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        post_commit = hooks_dir / "post-commit"
+        post_commit.write_text("#!/bin/sh\n# Custom hook\necho custom\n\n# Git Prompt Note agent post-commit hook\ngit prompt-note post-commit\n")
+        post_commit.chmod(0o755)
+
+        script_path = Path(gpn.__file__).resolve()
+        res = subprocess.run(["python3", str(script_path), "uninstall-hook", "--post-commit-only"], cwd=self.repo_dir, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertTrue(post_commit.exists())
+        content = post_commit.read_text()
+        self.assertIn("echo custom", content)
+        self.assertNotIn("git prompt-note", content)
+
+
 
 class TestExportAndImportLog(unittest.TestCase):
     def setUp(self):
@@ -439,6 +485,110 @@ class TestExportAndImportLog(unittest.TestCase):
         notes = gpn.parse_notes(reconciled)
         self.assertEqual(len(notes), 1)
         self.assertEqual(notes[0].prompts[0].text, "Steer feature")
+
+
+class TestPromptExclusionAndRetraction(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.logs_dir = Path(self.temp_dir.name) / "brain" / "test-session-uuid" / ".system_generated" / "logs"
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.transcript_file = self.logs_dir / "transcript.jsonl"
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def _write_transcript(self, user_prompts: list):
+        with open(self.transcript_file, "w", encoding="utf-8") as f:
+            for i, p in enumerate(user_prompts):
+                step = {
+                    "type": "USER_INPUT",
+                    "source": "USER_EXPLICIT",
+                    "content": p,
+                    "created_at": f"2026-09-04T09:{10+i:02d}:00Z",
+                }
+                f.write(json.dumps(step) + "\n")
+
+    def test_ignore_prefix_excluded(self):
+        self._write_transcript([
+            "First valid prompt",
+            "[ignore] Accidental prompt in wrong window",
+            "[wrong-session] Meant for another project",
+            "[skip] Temporary check",
+            "(wrong session: oops)",
+            "Second valid prompt",
+        ])
+        data = gpn.parse_session_transcript(self.transcript_file)
+        self.assertIsNotNone(data)
+        prompts = [p.text for p in data["prompts"]]
+        self.assertEqual(prompts, ["First valid prompt", "Second valid prompt"])
+
+    def test_retract_last_prompt(self):
+        self._write_transcript([
+            "First valid prompt",
+            "Oops wrong window prompt",
+            "[ignore-last]",
+            "Second valid prompt",
+        ])
+        data = gpn.parse_session_transcript(self.transcript_file)
+        self.assertIsNotNone(data)
+        prompts = [p.text for p in data["prompts"]]
+        self.assertEqual(prompts, ["First valid prompt", "Second valid prompt"])
+
+    def test_retract_multiple_prompts(self):
+        self._write_transcript([
+            "First valid prompt",
+            "Accident 1",
+            "Accident 2",
+            "[ignore-last 2]",
+            "Second valid prompt",
+        ])
+        data = gpn.parse_session_transcript(self.transcript_file)
+        self.assertIsNotNone(data)
+        prompts = [p.text for p in data["prompts"]]
+        self.assertEqual(prompts, ["First valid prompt", "Second valid prompt"])
+
+    def test_standalone_wrong_session_retracts_last(self):
+        self._write_transcript([
+            "First valid prompt",
+            "Accidental prompt for other repo",
+            "[wrong-session]",
+            "Second valid prompt",
+        ])
+        data = gpn.parse_session_transcript(self.transcript_file)
+        self.assertIsNotNone(data)
+        prompts = [p.text for p in data["prompts"]]
+        self.assertEqual(prompts, ["First valid prompt", "Second valid prompt"])
+
+    def test_retract_and_steer_in_one_turn(self):
+        self._write_transcript([
+            "Accidental prompt",
+            "[ignore-last] Real intended prompt for this repository",
+        ])
+        data = gpn.parse_session_transcript(self.transcript_file)
+        self.assertIsNotNone(data)
+        prompts = [p.text for p in data["prompts"]]
+        self.assertEqual(prompts, ["Real intended prompt for this repository"])
+
+    def test_ignore_all_resets_prompts(self):
+        self._write_transcript([
+            "Accident 1",
+            "Accident 2",
+            "[ignore-all]",
+            "Fresh prompt",
+        ])
+        data = gpn.parse_session_transcript(self.transcript_file)
+        self.assertIsNotNone(data)
+        prompts = [p.text for p in data["prompts"]]
+        self.assertEqual(prompts, ["Fresh prompt"])
+
+    def test_normal_english_sentences_preserved(self):
+        self._write_transcript([
+            "Ignore previous compiler warnings and proceed with build",
+        ])
+        data = gpn.parse_session_transcript(self.transcript_file)
+        self.assertIsNotNone(data)
+        prompts = [p.text for p in data["prompts"]]
+        self.assertEqual(prompts, ["Ignore previous compiler warnings and proceed with build"])
 
 
 if __name__ == "__main__":

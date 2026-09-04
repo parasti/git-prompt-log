@@ -145,6 +145,33 @@ Assistant-Prompts:
 
 ---
 
+## Accidental Prompts & Parallel Sessions
+
+When working with parallel agent sessions across different worktrees or repositories, accidental prompts can be prevented or retracted:
+
+- **Tagging on input:** Prefix prompts with `[ignore]`, `[skip]`, `[wrong-session]`, or `[scratch]`. They are automatically excluded from notes.
+- **Retracting after sending:** If an accidental prompt was already sent, send `[ignore-last]` (or `[wrong-session]`, `[retract]`) in that session. It drops the preceding prompt.
+- **Retracting multiple turns:** Use `[ignore-last N]` (e.g. `[ignore-last 2]`) or `[ignore-all]`.
+- **Retracting and steering in one prompt:** `[ignore-last] Actually, do this instead...`.
+- **Filtering on record:** `git prompt-note record --drop "pattern"` or `git prompt-note record --drop-last 1`.
+- **Interactive editing:** `git prompt-note edit HEAD` opens the note in `$EDITOR`.
+
+---
+
+## Uninstalling Hooks
+
+To remove the Git hooks installed by `init` or `install-hook`:
+
+```bash
+# Remove post-rewrite and post-commit hooks from the current repository
+git prompt-note uninstall-hook
+
+# Completely remove hooks, unset local git notes config, and delete local skill
+git prompt-note uninstall-hook --all
+```
+
+---
+
 ## Remote Synchronization
 
 To push and fetch notes automatically alongside branch pushes:
@@ -164,7 +191,9 @@ Run the automated test suite:
 make test
 ```
 
-## Uninstallation
+## System Uninstallation
+
+To remove the CLI binary from your machine:
 
 ```bash
 ./uninstall.sh
@@ -173,3 +202,4 @@ make test
 ## License
 
 GPL v2+ (or MIT upon release).
+
