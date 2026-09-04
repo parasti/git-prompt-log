@@ -99,12 +99,19 @@ git config --global --add prompt-log.exclude "^(?i)commit$"
 ```
 Any prompt matching any configured `prompt-log.exclude` regex will be automatically omitted from prompt notes by both the post-commit hook and `git prompt-log record`.
 
-### Accidental Prompt Retraction & Retroactive Pruning
-When asked how to prevent, retract, or remove accidental prompts:
+### Accidental Prompt Retraction & Session Exclusions
+When asked how to prevent, retract, or exclude specific prompts:
 * **Tag on input:** Prefix prompts with `[ignore]`, `[skip]`, `[wrong-session]`, or `[scratch]` to exclude them from being recorded.
-* **Retract previous prompt:** Send `[ignore-last]` (or `[retract]`, `[wrong-session]`) to drop the preceding prompt.
-* **Retract multiple prompts:** Send `[ignore-last N]` (e.g. `[ignore-last 2]`) or `[ignore-all]`.
-* **Retract and steer in one turn:** `[ignore-last] Actually, do this instead...`.
+* **Targeted in-chat retraction:** At ANY point in the conversation, retract an earlier prompt:
+  * `[retract "Commit"]` or `[drop-prompt "Commit"]`: Drops earlier prompts matching `"Commit"`.
+  * `[retract #2]` or `[drop-prompt 2]`: Drops prompt #2 of the current session.
+  * `[retract "Commit"] Implement this instead...`: Drops earlier prompt and steers in the same turn.
+* **Retract immediately preceding prompt:** Send `[ignore-last]` (or `[retract]`, `[wrong-session]`).
+* **Retract multiple recent prompts:** Send `[ignore-last N]` (e.g. `[ignore-last 2]`) or `[ignore-all]`.
+* **Session CLI management (No JSONL editing required):**
+  * `git prompt-log session`: List all prompts in active session with 1-based index numbers.
+  * `git prompt-log session drop <index_or_pattern>`: Mark prompt #N or matching pattern as excluded for this session (automatically updates HEAD's prompt note).
+  * `git prompt-log session undrop <index_or_pattern>`: Restore previously excluded prompt.
 * **Retroactive drop on existing notes:** Run `git prompt-log record --drop "<pattern>"` (optionally targeting a specific commit with `--commit <SHA>`).
 * **Manual note edit:** Run `git prompt-log edit HEAD` (or `<SHA>`) to edit notes directly in `$EDITOR`.
 

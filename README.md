@@ -139,10 +139,36 @@ If an unintended prompt was already sent in the active session, send a retractio
 - `[ignore-last N]`: Drops the preceding *N* prompts (e.g., `[ignore-last 2]`).
 - `[ignore-all]`: Clears all prompts recorded for the current session.
 
-Retraction and steering can be combined into a single message:
-```text
-[ignore-last] Actually, implement this instead...
+#### Targeted Retraction (Any Time in the Session)
+
+You do not need to retract a prompt immediately on the next turn. At any point later in the conversation, target earlier prompts by text matching or turn index:
+
+- `[retract "Commit"]` (or `[drop-prompt "Commit"]`): Excises earlier prompts matching `"Commit"` from the session history.
+- `[retract #2]` (or `[drop-prompt 2]`): Excises prompt turn #2 from the session history.
+- `[retract "Commit"] Implement authentication instead`: Retracts an earlier prompt and steers in the same turn.
+
+### Session Prompt Management (CLI)
+
+To inspect and exclude specific prompts from an active session without modifying raw transcript files or setting blanket global regexes:
+
+```bash
+# List prompts in the active session with 1-based index numbers
+git prompt-log session
+
+# Mark a specific prompt turn (e.g. #2) as excluded from this session
+git prompt-log session drop 2
+
+# Or exclude prompts matching a specific pattern for this session
+git prompt-log session drop "Commit"
+
+# Restore a previously excluded prompt
+git prompt-log session undrop 2
+
+# Clear all session-specific exclusions
+git prompt-log session clear
 ```
+
+Session exclusions are persisted in `.prompt-log-excludes.json` alongside the session data, and the note on `HEAD` is automatically refreshed.
 
 ### Always-Skip Patterns (Configuration)
 

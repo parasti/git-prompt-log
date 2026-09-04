@@ -726,6 +726,42 @@ class TestPromptExclusionAndRetraction(unittest.TestCase):
         self.assertTrue(gpn.is_ignored_prompt("commit", [r"^(?i)commit$"]))
         self.assertFalse(gpn.is_ignored_prompt("Fix commit parser bug", [r"^(?i)commit$"]))
 
+    def test_targeted_retraction_by_pattern(self):
+        self._write_transcript([
+            "First valid prompt",
+            "Commit",
+            "Second valid prompt",
+            "[retract \"Commit\"]",
+            "Third valid prompt",
+        ])
+        data = gpn.parse_session_transcript(self.transcript_file)
+        self.assertIsNotNone(data)
+        prompts = [p.text for p in data["prompts"]]
+        self.assertEqual(prompts, ["First valid prompt", "Second valid prompt", "Third valid prompt"])
+
+    def test_targeted_retraction_by_index(self):
+        self._write_transcript([
+            "First valid prompt",
+            "Accidental prompt at index 2",
+            "Third valid prompt",
+            "[drop-prompt 2]",
+        ])
+        data = gpn.parse_session_transcript(self.transcript_file)
+        self.assertIsNotNone(data)
+        prompts = [p.text for p in data["prompts"]]
+        self.assertEqual(prompts, ["First valid prompt", "Third valid prompt"])
+
+    def test_targeted_retraction_and_steer(self):
+        self._write_transcript([
+            "First valid prompt",
+            "Accidental query",
+            "[retract 'Accidental query'] Next intended feature",
+        ])
+        data = gpn.parse_session_transcript(self.transcript_file)
+        self.assertIsNotNone(data)
+        prompts = [p.text for p in data["prompts"]]
+        self.assertEqual(prompts, ["First valid prompt", "Next intended feature"])
+
 
 class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
     def setUp(self):
@@ -1094,6 +1130,58 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         subprocess.run(uninstall_cmd, cwd=self.repo_dir, check=True)
         patterns_after = gpn.get_configured_exclude_patterns(self.repo_dir)
         self.assertEqual(patterns_after, [])
+
+    def test_session_drop_and_undrop_cli(self):
+        # 1. Author initial commit with two prompts
+        self._append_prompt("Initial architecture plan", "2026-09-04T12:00:00Z")
+        self._append_prompt("Accidental query about unrelated project", "2026-09-04T12:05:00Z")
+        sha1 = self._commit("arch.txt", "arch", "feat: Arch")
+
+        raw1 = gpn.get_note_content(sha1, repo_root=self.repo_dir)
+        notes1 = gpn.parse_notes(raw1)
+        self.assertEqual(len(notes1[0].prompts), 2)
+
+        # 2. Drop prompt #2 specifically from this session via CLI
+        cmd_drop = [
+            "python3",
+            str(Path(gpn.__file__).resolve()),
+            "session",
+            "drop",
+            "2",
+        ]
+        subprocess.run(cmd_drop, cwd=self.repo_dir, check=True, env=self.env)
+
+        # Note on HEAD (sha1) was automatically updated!
+        raw1_after = gpn.get_note_content(sha1, repo_root=self.repo_dir)
+        notes1_after = gpn.parse_notes(raw1_after)
+        prompts1_after = [p.text for p in notes1_after[0].prompts]
+        self.assertEqual(prompts1_after, ["Initial architecture plan"])
+
+        # 3. Add subsequent prompt and make new commit:
+        # Verify that new commit created by post-commit hook also omits prompt #2!
+        self._append_prompt("Implement data layer", "2026-09-04T12:10:00Z")
+        sha2 = self._commit("data.txt", "data", "feat: Data layer")
+
+        raw2 = gpn.get_note_content(sha2, repo_root=self.repo_dir)
+        notes2 = gpn.parse_notes(raw2)
+        prompts2 = [p.text for p in notes2[0].prompts]
+        self.assertEqual(prompts2, ["Implement data layer", "Initial architecture plan"])
+
+        # 4. Restore prompt #2 via session undrop
+        cmd_undrop = [
+            "python3",
+            str(Path(gpn.__file__).resolve()),
+            "session",
+            "undrop",
+            "2",
+        ]
+        subprocess.run(cmd_undrop, cwd=self.repo_dir, check=True, env=self.env)
+
+        raw2_undropped = gpn.get_note_content(sha2, repo_root=self.repo_dir)
+        notes2_undropped = gpn.parse_notes(raw2_undropped)
+        prompts2_undropped = [p.text for p in notes2_undropped[0].prompts]
+        self.assertEqual(len(prompts2_undropped), 3)
+        self.assertIn("Accidental query about unrelated project", prompts2_undropped)
 
 
 if __name__ == "__main__":

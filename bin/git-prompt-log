@@ -417,6 +417,36 @@ def get_brain_dir() -> Path:
     return Path(os.path.expanduser("~/.gemini/antigravity-cli/brain"))
 
 
+def get_session_excludes_file(session_id: str, repo_root: Optional[Path] = None) -> Path:
+    """Returns path to the session-specific exclusions JSON file."""
+    brain = get_brain_dir()
+    session_dir = brain / session_id
+    if session_dir.exists():
+        return session_dir / ".prompt-log-excludes.json"
+    common_git = get_common_git_dir(repo_root)
+    fallback_dir = common_git / "prompt-log" / "sessions"
+    fallback_dir.mkdir(parents=True, exist_ok=True)
+    return fallback_dir / f"{session_id}.json"
+
+
+def load_session_excludes(session_id: str, repo_root: Optional[Path] = None) -> Dict[str, Any]:
+    """Loads session exclusions: {'patterns': [...], 'indices': [...], 'timestamps': [...]}."""
+    fpath = get_session_excludes_file(session_id, repo_root=repo_root)
+    if fpath.exists():
+        try:
+            return json.loads(fpath.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"patterns": [], "indices": [], "timestamps": []}
+
+
+def save_session_excludes(session_id: str, data: Dict[str, Any], repo_root: Optional[Path] = None) -> None:
+    """Saves session exclusions."""
+    fpath = get_session_excludes_file(session_id, repo_root=repo_root)
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+    fpath.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 IGNORE_PREFIX_RE = re.compile(
     r"^(?:\[\s*(?:ignore|skip|skip-note|no-note|no-prompt|scratch|wrong-session|wrong session|wrong-window|wrong window|oops|nolog)\s*[:\]]|"
     r"\(\s*(?:ignore|skip|skip-note|no-note|no-prompt|scratch|wrong-session|wrong session|wrong-window|wrong window|oops|nolog)\s*[:\)]|"
@@ -445,6 +475,15 @@ IGNORE_ALL_RE = re.compile(
 STANDALONE_RETRACT_RE = re.compile(
     r"^\[\s*(?:wrong-session|wrong session|wrong-window|wrong window|oops|cancel|retract)\s*\]$",
     re.IGNORECASE,
+)
+
+IGNORE_TARGET_RE = re.compile(
+    r"^(?:\[\s*(?:retract|drop|ignore|scratch)(?:-prompt|-matching)?\s+(?:\"([^\"]+)\"|\x27([^\x27]+)\x27|/([^/]+)/|#(\d+))\s*\]|"
+    r"\[\s*(?:retract-prompt|drop-prompt|ignore-prompt)\s+(\d+)\s*\]|"
+    r"/\s*(?:retract|drop|ignore)(?:-prompt|-matching)?\s+(?:\"([^\"]+)\"|\x27([^\x27]+)\x27|/([^/]+)/|#?(\d+))\b|"
+    r"/\s*(?:retract|drop|ignore)(?:-prompt|-matching)?\s+(?:\"([^\"]+)\"|\x27([^\x27]+)\x27|/([^/]+)/))"
+    r"(?:\s*(.*))?$",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -496,7 +535,12 @@ def get_agent_identity() -> Tuple[str, str]:
     return harness, "Gemini 3.8 Flash (High)"
 
 
-def parse_session_transcript(transcript_path: Path, custom_patterns: Optional[List[str]] = None) -> Optional[Dict]:
+def parse_session_transcript(
+    transcript_path: Path,
+    custom_patterns: Optional[List[str]] = None,
+    apply_session_excludes: bool = True,
+    repo_root: Optional[Path] = None,
+) -> Optional[Dict]:
     """Parses transcript_full.jsonl or transcript.jsonl into user prompt turns."""
     if not transcript_path.exists():
         return None
@@ -548,7 +592,33 @@ def parse_session_transcript(transcript_path: Path, custom_patterns: Optional[Li
                     prompts.append(PromptEntry(timestamp=format_utc(created_at), text=remaining))
                 continue
 
-            # 2. Retract previous N prompts: [ignore-last], [ignore-prev 2], [retract]
+            # 2. Targeted prompt retraction: [retract "Commit"], [drop-prompt 2], [retract #2]
+            m_target = IGNORE_TARGET_RE.match(clean)
+            if m_target:
+                t_str = (
+                    m_target.group(1)
+                    or m_target.group(2)
+                    or m_target.group(3)
+                    or m_target.group(6)
+                    or m_target.group(7)
+                    or m_target.group(8)
+                    or m_target.group(10)
+                    or m_target.group(11)
+                    or m_target.group(12)
+                )
+                t_idx = m_target.group(4) or m_target.group(5) or m_target.group(9)
+                if t_idx:
+                    idx = int(t_idx) - 1
+                    if 0 <= idx < len(prompts):
+                        prompts.pop(idx)
+                elif t_str:
+                    prompts = [p for p in prompts if not _safe_search(t_str, p.text)]
+                remaining = m_target.group(13).strip() if m_target.group(13) else ""
+                if remaining and not is_ignored_prompt(remaining, custom_patterns=custom_patterns):
+                    prompts.append(PromptEntry(timestamp=format_utc(created_at), text=remaining))
+                continue
+
+            # 3. Retract previous N prompts: [ignore-last], [ignore-prev 2], [retract]
             m_last = IGNORE_LAST_RE.match(clean)
             if m_last:
                 n_str = m_last.group(1) or m_last.group(2) or m_last.group(3)
@@ -560,19 +630,37 @@ def parse_session_transcript(transcript_path: Path, custom_patterns: Optional[Li
                     prompts.append(PromptEntry(timestamp=format_utc(created_at), text=remaining))
                 continue
 
-            # 3. Standalone oops/wrong-session marker retracting previous prompt: [wrong-session]
+            # 4. Standalone oops/wrong-session marker retracting previous prompt: [wrong-session]
             if STANDALONE_RETRACT_RE.match(clean):
                 if prompts:
                     prompts.pop()
                 continue
 
-            # 4. Prompt explicitly marked to ignore or matching custom exclusion pattern:
+            # 5. Prompt explicitly marked to ignore or matching custom exclusion pattern:
             if is_ignored_prompt(clean, custom_patterns=custom_patterns):
                 continue
 
             prompts.append(PromptEntry(timestamp=format_utc(created_at), text=clean))
 
     cid = transcript_path.parent.parent.parent.name
+    if apply_session_excludes:
+        session_excludes = load_session_excludes(cid, repo_root=repo_root)
+        if session_excludes:
+            pat_list = session_excludes.get("patterns", [])
+            ts_list = session_excludes.get("timestamps", [])
+            idx_set = set(session_excludes.get("indices", []))
+
+            filtered_prompts: List[PromptEntry] = []
+            for i, p in enumerate(prompts, start=1):
+                if i in idx_set:
+                    continue
+                if p.timestamp in ts_list:
+                    continue
+                if any(_safe_search(pat, p.text) for pat in pat_list):
+                    continue
+                filtered_prompts.append(p)
+            prompts = filtered_prompts
+
     return {
         "session_id": cid,
         "detected_model": detected_model,
@@ -727,17 +815,24 @@ def cmd_record(args: argparse.Namespace) -> int:
             prompts=target_prompts,
         )
 
-        all_notes = existing_notes + [new_note]
+        other_notes = [n for n in existing_notes if n.session_id != session_id]
+        all_notes = other_notes + [new_note]
 
     merged = merge_session_notes(all_notes)
 
-    # Prune any prompts matching exclude patterns across all merged notes
-    if exclude_patterns:
+    # Prune any prompts matching exclude patterns or session-specific excludes across all merged notes
+    session_excludes = load_session_excludes(session_id, repo_root=repo_root)
+    session_ts = set(session_excludes.get("timestamps", []))
+    session_pats = session_excludes.get("patterns", [])
+
+    if exclude_patterns or session_ts or session_pats:
         pruned_merged: List[SessionNote] = []
         for n in merged:
             kept_prompts = [
                 p for p in n.prompts
-                if not any(_safe_search(pat, p.text) for pat in exclude_patterns)
+                if p.timestamp not in session_ts
+                and not any(_safe_search(pat, p.text) for pat in exclude_patterns)
+                and not any(_safe_search(pat, p.text) for pat in session_pats)
             ]
             if kept_prompts:
                 pruned_merged.append(
@@ -1312,6 +1407,168 @@ def cmd_import_log(args: argparse.Namespace) -> int:
     return 0 if imported_count > 0 else 1
 
 
+def cmd_session(args: argparse.Namespace) -> int:
+    """Inspects and manages prompt exclusions for a specific agent session."""
+    repo_root = get_repo_root()
+    action = getattr(args, "action", "list") or "list"
+    session_id = getattr(args, "session", None)
+
+    brain = get_brain_dir()
+    if session_id:
+        t_path = brain / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+        if not t_path.exists():
+            sys.stderr.write(f"Session transcript not found for session ID: {session_id}\n")
+            return 1
+    else:
+        env_sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+        if env_sid:
+            t_path = brain / env_sid / ".system_generated" / "logs" / "transcript.jsonl"
+            if t_path.exists():
+                session_id = env_sid
+        if not session_id:
+            found = find_session_transcript(repo_root=repo_root)
+            if not found:
+                sys.stderr.write("No active agent session transcript found.\n")
+                return 1
+            session_id = found["session_id"]
+            t_path = brain / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+
+    session_excludes = load_session_excludes(session_id, repo_root=repo_root)
+    raw_data = parse_session_transcript(t_path, apply_session_excludes=False, repo_root=repo_root)
+    if not raw_data:
+        sys.stderr.write(f"No prompts found in session {session_id}.\n")
+        return 1
+
+    all_prompts: List[PromptEntry] = raw_data.get("prompts", [])
+    pat_list = session_excludes.get("patterns", [])
+    ts_list = session_excludes.get("timestamps", [])
+    idx_set = set(session_excludes.get("indices", []))
+
+    if action in ("list", "show"):
+        print(f"Session: {session_id} ({len(all_prompts)} prompts)")
+        for i, p in enumerate(all_prompts, start=1):
+            is_excluded = (
+                i in idx_set
+                or p.timestamp in ts_list
+                or any(_safe_search(pat, p.text) for pat in pat_list)
+            )
+            status = " [EXCLUDED]" if is_excluded else ""
+            first_line = p.text.splitlines()[0] if p.text else ""
+            if len(p.text.splitlines()) > 1:
+                first_line += "..."
+            print(f"  [{i}] {p.timestamp}{status}")
+            print(f"      {first_line}")
+        return 0
+
+    elif action in ("drop", "exclude"):
+        target = getattr(args, "target", None)
+        if not target:
+            sys.stderr.write("Error: drop requires an index (e.g. 2) or regex pattern (e.g. 'Commit')\n")
+            return 1
+
+        if target.isdigit():
+            idx = int(target)
+            if idx < 1 or idx > len(all_prompts):
+                sys.stderr.write(f"Error: index {idx} out of range (1-{len(all_prompts)})\n")
+                return 1
+            target_prompt = all_prompts[idx - 1]
+            if target_prompt.timestamp not in session_excludes.setdefault("timestamps", []):
+                session_excludes["timestamps"].append(target_prompt.timestamp)
+            save_session_excludes(session_id, session_excludes, repo_root=repo_root)
+            first_line = target_prompt.text.splitlines()[0] if target_prompt.text else ""
+            print(f"Excluded prompt [{idx}] from session {session_id[:8]}: {first_line}")
+        else:
+            if target not in session_excludes.setdefault("patterns", []):
+                session_excludes["patterns"].append(target)
+            save_session_excludes(session_id, session_excludes, repo_root=repo_root)
+            print(f"Excluded prompts matching '{target}' from session {session_id[:8]}.")
+
+        if not getattr(args, "no_update", False):
+            commit_target = getattr(args, "commit", "HEAD") or "HEAD"
+            rec_args = argparse.Namespace(
+                commit=commit_target,
+                session=session_id,
+                ref=args.ref,
+                exclude=None,
+                drop_last=0,
+                edit=False,
+                quiet=True,
+                dry_run=False,
+            )
+            cmd_record(rec_args)
+            print(f"Updated prompt note on {commit_target}.")
+        return 0
+
+    elif action in ("undrop", "restore"):
+        target = getattr(args, "target", None)
+        if not target:
+            sys.stderr.write("Error: undrop requires an index (e.g. 2) or regex pattern (e.g. 'Commit')\n")
+            return 1
+
+        modified = False
+        if target.isdigit():
+            idx = int(target)
+            if idx < 1 or idx > len(all_prompts):
+                sys.stderr.write(f"Error: index {idx} out of range (1-{len(all_prompts)})\n")
+                return 1
+            target_prompt = all_prompts[idx - 1]
+            if target_prompt.timestamp in session_excludes.get("timestamps", []):
+                session_excludes["timestamps"].remove(target_prompt.timestamp)
+                modified = True
+            if idx in session_excludes.get("indices", []):
+                session_excludes["indices"].remove(idx)
+                modified = True
+        else:
+            if target in session_excludes.get("patterns", []):
+                session_excludes["patterns"].remove(target)
+                modified = True
+
+        if modified:
+            save_session_excludes(session_id, session_excludes, repo_root=repo_root)
+            print(f"Restored prompt '{target}' in session {session_id[:8]}.")
+            if not getattr(args, "no_update", False):
+                commit_target = getattr(args, "commit", "HEAD") or "HEAD"
+                rec_args = argparse.Namespace(
+                    commit=commit_target,
+                    session=session_id,
+                    ref=args.ref,
+                    exclude=None,
+                    drop_last=0,
+                    edit=False,
+                    quiet=True,
+                    dry_run=False,
+                )
+                cmd_record(rec_args)
+                print(f"Updated prompt note on {commit_target}.")
+        else:
+            print(f"No active exclusion found for '{target}' in session {session_id[:8]}.")
+        return 0
+
+    elif action == "clear":
+        session_excludes = {"patterns": [], "indices": [], "timestamps": []}
+        save_session_excludes(session_id, session_excludes, repo_root=repo_root)
+        print(f"Cleared all exclusions for session {session_id[:8]}.")
+        if not getattr(args, "no_update", False):
+            commit_target = getattr(args, "commit", "HEAD") or "HEAD"
+            rec_args = argparse.Namespace(
+                commit=commit_target,
+                session=session_id,
+                ref=args.ref,
+                exclude=None,
+                drop_last=0,
+                edit=False,
+                quiet=True,
+                dry_run=False,
+            )
+            cmd_record(rec_args)
+            print(f"Updated prompt note on {commit_target}.")
+        return 0
+
+    else:
+        sys.stderr.write(f"Unknown session action: {action}\n")
+        return 1
+
+
 DEFAULT_SKILL_MD = """---
 name: git-prompt-log
 description: >-
@@ -1824,6 +2081,22 @@ def main():
     p_import.add_argument("file", help="Path to exported prompt log markdown file")
     p_import.add_argument("--commit", "-c", help="Attach to a specific target commit instead of resolving from log")
 
+    # session
+    p_session = subparsers.add_parser(
+        "session", help="Inspect and manage prompt exclusions for a specific agent session", parents=[base_parser]
+    )
+    p_session.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "show", "drop", "exclude", "undrop", "restore", "clear"],
+        help="Action: list (default), drop, undrop, clear",
+    )
+    p_session.add_argument("target", nargs="?", help="Prompt 1-based index (e.g. 2) or regex pattern (e.g. 'Commit')")
+    p_session.add_argument("--session", "-s", help="Target session conversation UUID (default: active session)")
+    p_session.add_argument("--commit", "-c", default="HEAD", help="Commit to update note on (default: HEAD)")
+    p_session.add_argument("--no-update", action="store_true", help="Do not automatically re-record note on commit")
+
     args = parser.parse_args()
 
     if args.command in ("init", "install", "install-hook", "install-hooks"):
@@ -1832,6 +2105,8 @@ def main():
         sys.exit(cmd_uninstall_hook(args))
     elif args.command == "record":
         sys.exit(cmd_record(args))
+    elif args.command == "session":
+        sys.exit(cmd_session(args))
     elif args.command == "edit":
         sys.exit(cmd_edit(args))
     elif args.command == "post-commit":
