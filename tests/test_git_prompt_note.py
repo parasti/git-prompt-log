@@ -133,8 +133,8 @@ class TestNoteMerging(unittest.TestCase):
         self.assertEqual(m.session_id, "session-1")
         self.assertEqual(m.recorded_at, "2026-09-04 01:10:00 UTC")  # Latest timestamp
         self.assertEqual(len(m.prompts), 2)
-        self.assertEqual(m.prompts[0].text, "First prompt")
-        self.assertEqual(m.prompts[1].text, "Second prompt")
+        self.assertEqual(m.prompts[0].text, "Second prompt")
+        self.assertEqual(m.prompts[1].text, "First prompt")
 
     def test_cross_session_squash_merge(self):
         note1 = gpn.SessionNote(
@@ -235,8 +235,8 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         self.assertEqual(len(parsed), 1)
         self.assertEqual(parsed[0].session_id, "session-test")
         self.assertEqual(len(parsed[0].prompts), 2)
-        self.assertEqual(parsed[0].prompts[0].text, "Create file 1")
-        self.assertEqual(parsed[0].prompts[1].text, "Create file 2")
+        self.assertEqual(parsed[0].prompts[0].text, "Create file 2")
+        self.assertEqual(parsed[0].prompts[1].text, "Create file 1")
 
     def test_install_hook_installs_hooks_by_default(self):
         script_path = Path(gpn.__file__).resolve()
@@ -660,10 +660,14 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         note2_raw = gpn.get_note_content(sha2, repo_root=self.repo_dir)
         self.assertIsNotNone(note2_raw)
         notes2 = gpn.parse_notes(note2_raw)
+        # Commit 2 carries full cumulative history (Prompt 2 causal at top, Prompt 1 below)
+        note2_raw = gpn.get_note_content(sha2, repo_root=self.repo_dir)
+        self.assertIsNotNone(note2_raw)
+        notes2 = gpn.parse_notes(note2_raw)
         self.assertEqual(len(notes2), 1)
         self.assertEqual(len(notes2[0].prompts), 2)
-        self.assertEqual(notes2[0].prompts[0].text, "Implement feature part 1")
-        self.assertEqual(notes2[0].prompts[1].text, "Implement feature part 2")
+        self.assertEqual(notes2[0].prompts[0].text, "Implement feature part 2")
+        self.assertEqual(notes2[0].prompts[1].text, "Implement feature part 1")
 
         # Commit 1 still retains its original snapshot
         note1_check = gpn.get_note_content(sha1, repo_root=self.repo_dir)
@@ -705,8 +709,8 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         notes = gpn.parse_notes(note_amended_raw)
         self.assertEqual(len(notes), 1)
         self.assertEqual(len(notes[0].prompts), 2)
-        self.assertEqual(notes[0].prompts[0].text, "Initial commit prompt")
-        self.assertEqual(notes[0].prompts[1].text, "Improve performance on feature")
+        self.assertEqual(notes[0].prompts[0].text, "Improve performance on feature")
+        self.assertEqual(notes[0].prompts[1].text, "Initial commit prompt")
 
     def test_native_git_rebase_squash(self):
         # Base commit
@@ -734,8 +738,8 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         notes = gpn.parse_notes(note_raw)
         self.assertEqual(len(notes), 1)
         self.assertEqual(len(notes[0].prompts), 2)
-        self.assertEqual(notes[0].prompts[0].text, "Build part A")
-        self.assertEqual(notes[0].prompts[1].text, "Build part B")
+        self.assertEqual(notes[0].prompts[0].text, "Build part B")
+        self.assertEqual(notes[0].prompts[1].text, "Build part A")
 
     def test_native_git_rebase_onto_upstream(self):
         # Base commit
@@ -764,8 +768,8 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         self.assertIsNotNone(note_raw)
         notes = gpn.parse_notes(note_raw)
         self.assertEqual(len(notes[0].prompts), 2)
-        self.assertEqual(notes[0].prompts[0].text, "Base commit")
-        self.assertEqual(notes[0].prompts[1].text, "Feature work")
+        self.assertEqual(notes[0].prompts[0].text, "Feature work")
+        self.assertEqual(notes[0].prompts[1].text, "Base commit")
 
     def test_rebase_drop_narrative_lands_on_replacement_commit(self):
         # 1. Base commit
@@ -797,14 +801,14 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         self.assertEqual(len(notes1[0].prompts), 1)
         self.assertEqual(notes1[0].prompts[0].text, "Implement basic audio engine")
 
-        # Replacement commit sha3 retains full cumulative lineage: inception, dead-end, and redirect!
+        # Replacement commit sha3 retains full cumulative lineage with newest causal prompt at top!
         note3_raw = gpn.get_note_content(sha3, repo_root=self.repo_dir)
         self.assertIsNotNone(note3_raw)
         notes3 = gpn.parse_notes(note3_raw)
         self.assertEqual(len(notes3[0].prompts), 3)
-        self.assertEqual(notes3[0].prompts[0].text, "Implement basic audio engine")
+        self.assertEqual(notes3[0].prompts[0].text, "The custom Doppler math is causing distortion. Drop that commit and use OpenAL distance attenuation instead")
         self.assertEqual(notes3[0].prompts[1].text, "Try implementing custom Doppler shift calculation in audio update loop")
-        self.assertEqual(notes3[0].prompts[2].text, "The custom Doppler math is causing distortion. Drop that commit and use OpenAL distance attenuation instead")
+        self.assertEqual(notes3[0].prompts[2].text, "Implement basic audio engine")
 
     def test_rebase_reorder_commits_preserves_notes_without_duplication(self):
         # 1. Base commit
@@ -834,16 +838,17 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         self.assertEqual(len(note_a.prompts), 1)
         self.assertEqual(note_a.prompts[0].text, "Feature A (Sound)")
         self.assertEqual(len(note_b.prompts), 2)
-        self.assertEqual(note_b.prompts[1].text, "Feature B (Music)")
+        self.assertEqual(note_b.prompts[0].text, "Feature B (Music)")
+        self.assertEqual(note_b.prompts[1].text, "Feature A (Sound)")
 
         # 4. Author a subsequent commit C in the same session
         self._append_prompt("Feature C (UI)", "2026-09-04T10:15:00Z")
         sha_c = self._commit("ui.txt", "ui", "feat: UI")
 
-        # Commit C receives all prompts up to its creation
+        # Commit C receives all prompts up to its creation (newest causal at top)
         note_c = gpn.parse_notes(gpn.get_note_content(sha_c, repo_root=self.repo_dir))[0]
         self.assertEqual(len(note_c.prompts), 3)
-        self.assertEqual(note_c.prompts[-1].text, "Feature C (UI)")
+        self.assertEqual(note_c.prompts[0].text, "Feature C (UI)")
 
     def test_git_reset_recommit_preserves_cumulative_history(self):
         # 1. Base commit
@@ -865,17 +870,17 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         sha_new1 = self._commit("tokens.txt", "tokens", "feat: Tokens")
         sha_new2 = self._commit("parser.txt", "parser_clean", "feat: Clean Parser")
 
-        # Both replacement commits must preserve the full session history!
+        # Both replacement commits must preserve the full session history with causal prompt at top!
         note_new1 = gpn.parse_notes(gpn.get_note_content(sha_new1, repo_root=self.repo_dir))[0]
         note_new2 = gpn.parse_notes(gpn.get_note_content(sha_new2, repo_root=self.repo_dir))[0]
 
         self.assertEqual(len(note_new1.prompts), 3)
-        self.assertEqual(note_new1.prompts[0].text, "First attempt at parser")
+        self.assertEqual(note_new1.prompts[0].text, "Reset and re-split cleanly into tokens and parser")
         self.assertEqual(note_new1.prompts[1].text, "First attempt at AST")
-        self.assertEqual(note_new1.prompts[2].text, "Reset and re-split cleanly into tokens and parser")
+        self.assertEqual(note_new1.prompts[2].text, "First attempt at parser")
 
         self.assertEqual(len(note_new2.prompts), 3)
-        self.assertEqual(note_new2.prompts[2].text, "Reset and re-split cleanly into tokens and parser")
+        self.assertEqual(note_new2.prompts[0].text, "Reset and re-split cleanly into tokens and parser")
 
         # Log command displays cleanly
         out_log = subprocess.check_output(

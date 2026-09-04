@@ -272,8 +272,8 @@ def merge_session_notes(notes: List[SessionNote]) -> List[SessionNote]:
                     seen_prompts.add(key)
                     combined_prompts.append(p)
 
-        # Sort combined prompts chronologically
-        combined_prompts.sort(key=lambda p: parse_timestamp_sort_key(p.timestamp))
+        # Sort combined prompts reverse-chronologically (newest first so causal prompt is at the top)
+        combined_prompts.sort(key=lambda p: parse_timestamp_sort_key(p.timestamp), reverse=True)
 
         merged_sessions.append(
             SessionNote(
@@ -651,6 +651,9 @@ def cmd_record(args: argparse.Namespace) -> int:
     if getattr(args, "drop_last", 0) and args.drop_last > 0:
         target_prompts = target_prompts[:-args.drop_last]
 
+    # Sort reverse-chronologically so causal prompt is at the top
+    target_prompts.sort(key=lambda p: parse_timestamp_sort_key(p.timestamp), reverse=True)
+
     new_note = SessionNote(
         session_id=session_id,
         harness=harness,
@@ -798,10 +801,10 @@ def cmd_show(args: argparse.Namespace) -> int:
 
     if getattr(args, "active", False):
         notes = parse_notes(content)
-        if not notes or not notes[-1].prompts:
+        if not notes or not notes[0].prompts:
             sys.stderr.write(f"No prompts found in note on commit {commit_out[:8]}.\n")
             return 1
-        active_p = notes[-1].prompts[-1]
+        active_p = max(notes[0].prompts, key=lambda p: parse_timestamp_sort_key(p.timestamp))
         print(f"[{active_p.timestamp}] {active_p.text}")
         return 0
 
@@ -949,13 +952,13 @@ def cmd_log(args: argparse.Namespace) -> int:
         lines.append(f"* {c_yellow}{c_hash[:8]}{c_reset} {c_bold}{subj}{c_reset}")
         if note_raw:
             notes = parse_notes(note_raw)
-            if notes and notes[-1].prompts:
+            if notes and notes[0].prompts:
                 if getattr(args, "full", False):
-                    for p in notes[-1].prompts:
+                    for p in notes[0].prompts:
                         indented = p.text.replace("\n", "\n    ")
                         lines.append(f"  {c_cyan}[{p.timestamp}]{c_reset} {indented}")
                 else:
-                    active_p = notes[-1].prompts[-1]
+                    active_p = max(notes[0].prompts, key=lambda p: parse_timestamp_sort_key(p.timestamp))
                     indented = active_p.text.replace("\n", "\n    ")
                     lines.append(f"  {c_cyan}[{active_p.timestamp}]{c_reset} {indented}")
         lines.append("")
@@ -1041,7 +1044,7 @@ def cmd_export_log(args: argparse.Namespace) -> int:
         if len(merged_sessions) > 1:
             lines.append(f"### Session `{s.session_id[:8]}` ({s.model})")
             lines.append("")
-        for p in s.prompts:
+        for p in sorted(s.prompts, key=lambda p: parse_timestamp_sort_key(p.timestamp)):
             lines.append(f"#### [{p.timestamp}]")
             lines.append("")
             lines.append(f"> {p.text.replace(chr(10), chr(10) + '> ')}")
