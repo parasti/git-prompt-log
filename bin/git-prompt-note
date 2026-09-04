@@ -776,14 +776,15 @@ def cmd_post_rewrite(args: argparse.Namespace) -> int:
                     suffix = suf
                 all_notes.extend(parse_notes(raw))
 
-        # Only check new_sha if none of the old commits had notes
-        if not all_notes:
-            new_raw = get_note_content(new_sha, ref=ref, repo_root=repo_root)
-            if new_raw:
-                pre, _, suf = extract_prompt_block(new_raw)
+        # Also check if new_sha already has notes (e.g. from post-commit hook during amend)
+        new_raw = get_note_content(new_sha, ref=ref, repo_root=repo_root)
+        if new_raw:
+            pre, _, suf = extract_prompt_block(new_raw)
+            if pre and not prefix:
                 prefix = pre
+            if suf and not suffix:
                 suffix = suf
-                all_notes.extend(parse_notes(new_raw))
+            all_notes.extend(parse_notes(new_raw))
 
         if not all_notes:
             continue

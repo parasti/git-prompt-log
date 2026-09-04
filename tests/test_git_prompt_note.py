@@ -591,5 +591,163 @@ class TestPromptExclusionAndRetraction(unittest.TestCase):
         self.assertEqual(prompts, ["Ignore previous compiler warnings and proceed with build"])
 
 
+class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.repo_dir = Path(self.tmp_dir.name) / "repo"
+        self.repo_dir.mkdir()
+        self.data_dir = Path(self.tmp_dir.name) / "data"
+        self.data_dir.mkdir()
+
+        # Set up git repo
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repo_dir, check=True)
+
+        # Initialize git-prompt-note hooks
+        script_path = Path(gpn.__file__).resolve()
+        subprocess.run(["python3", str(script_path), "init"], cwd=self.repo_dir, check=True, capture_output=True)
+
+        # Set up mock transcript
+        self.session_id = "test-workflow-session-1234"
+        self.logs_dir = self.data_dir / "brain" / self.session_id / ".system_generated" / "logs"
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.transcript_file = self.logs_dir / "transcript.jsonl"
+
+        # Prepare env with local bin directory at the head of PATH
+        self.env = os.environ.copy()
+        self.env["PATH"] = f"{bin_path.parent}:{self.env.get('PATH', '')}"
+        self.env["ANTIGRAVITY_DATA_DIR"] = str(self.data_dir)
+        self.env["ANTIGRAVITY_CONVERSATION_ID"] = self.session_id
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def _append_prompt(self, text: str, timestamp_str: str):
+        step = {
+            "type": "USER_INPUT",
+            "source": "USER_EXPLICIT",
+            "content": text,
+            "created_at": timestamp_str,
+        }
+        with open(self.transcript_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(step) + "\n")
+
+    def _commit(self, filename: str, content: str, msg: str) -> str:
+        fpath = self.repo_dir / filename
+        fpath.write_text(content)
+        subprocess.run(["git", "add", filename], cwd=self.repo_dir, check=True, capture_output=True, env=self.env)
+        subprocess.run(["git", "commit", "-m", msg], cwd=self.repo_dir, check=True, capture_output=True, env=self.env)
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True, env=self.env).strip()
+
+    def test_sequential_commits_high_water_mark(self):
+        # 1. First prompt and commit
+        self._append_prompt("Implement feature part 1", "2026-09-04T10:00:00Z")
+        sha1 = self._commit("file1.txt", "v1", "feat: Feature part 1")
+
+        note1_raw = gpn.get_note_content(sha1, repo_root=self.repo_dir)
+        self.assertIsNotNone(note1_raw)
+        notes1 = gpn.parse_notes(note1_raw)
+        self.assertEqual(len(notes1), 1)
+        self.assertEqual(len(notes1[0].prompts), 1)
+        self.assertEqual(notes1[0].prompts[0].text, "Implement feature part 1")
+
+        # 2. Second prompt and commit
+        self._append_prompt("Implement feature part 2", "2026-09-04T10:05:00Z")
+        sha2 = self._commit("file2.txt", "v2", "feat: Feature part 2")
+
+        # Commit 2 should ONLY have the second prompt
+        note2_raw = gpn.get_note_content(sha2, repo_root=self.repo_dir)
+        self.assertIsNotNone(note2_raw)
+        notes2 = gpn.parse_notes(note2_raw)
+        self.assertEqual(len(notes2), 1)
+        self.assertEqual(len(notes2[0].prompts), 1)
+        self.assertEqual(notes2[0].prompts[0].text, "Implement feature part 2")
+
+        # Commit 1 still has prompt 1
+        note1_check = gpn.get_note_content(sha1, repo_root=self.repo_dir)
+        self.assertEqual(note1_check, note1_raw)
+
+    def test_commit_amend_carries_and_merges_note(self):
+        self._append_prompt("Initial commit prompt", "2026-09-04T10:00:00Z")
+        sha1 = self._commit("file1.txt", "v1", "feat: Original")
+
+        # Now add a followup prompt before amending
+        self._append_prompt("Improve performance on feature", "2026-09-04T10:05:00Z")
+        fpath = self.repo_dir / "file1.txt"
+        fpath.write_text("v2")
+        subprocess.run(["git", "add", "file1.txt"], cwd=self.repo_dir, check=True, env=self.env)
+        subprocess.run(["git", "commit", "--amend", "-m", "feat: Original improved"], cwd=self.repo_dir, check=True, env=self.env)
+
+        sha_amended = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+        self.assertNotEqual(sha1, sha_amended)
+
+        note_amended_raw = gpn.get_note_content(sha_amended, repo_root=self.repo_dir)
+        self.assertIsNotNone(note_amended_raw)
+        notes = gpn.parse_notes(note_amended_raw)
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(len(notes[0].prompts), 2)
+        self.assertEqual(notes[0].prompts[0].text, "Initial commit prompt")
+        self.assertEqual(notes[0].prompts[1].text, "Improve performance on feature")
+
+    def test_native_git_rebase_squash(self):
+        # Base commit
+        self._commit("base.txt", "base", "chore: Base commit")
+
+        # Commit 1
+        self._append_prompt("Build part A", "2026-09-04T10:00:00Z")
+        sha1 = self._commit("a.txt", "a", "feat: Part A")
+
+        # Commit 2
+        self._append_prompt("Build part B", "2026-09-04T10:05:00Z")
+        sha2 = self._commit("b.txt", "b", "feat: Part B")
+
+        # Interactive squash of HEAD into HEAD~1
+        # Set GIT_SEQUENCE_EDITOR to change 2nd 'pick' to 'squash'
+        py_editor = "python3 -c 'import sys; p=sys.argv[1]; lines=open(p).readlines(); lines[1]=\"squash \" + lines[1].split(\" \", 1)[1]; open(p,\"w\").writelines(lines)'"
+        env = self.env.copy()
+        env["GIT_SEQUENCE_EDITOR"] = py_editor
+        env["GIT_EDITOR"] = "true"  # for commit message editor
+        subprocess.run(["git", "rebase", "-i", "HEAD~2"], cwd=self.repo_dir, check=True, env=env)
+
+        sha_squashed = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+        note_raw = gpn.get_note_content(sha_squashed, repo_root=self.repo_dir)
+        self.assertIsNotNone(note_raw)
+        notes = gpn.parse_notes(note_raw)
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(len(notes[0].prompts), 2)
+        self.assertEqual(notes[0].prompts[0].text, "Build part A")
+        self.assertEqual(notes[0].prompts[1].text, "Build part B")
+
+    def test_native_git_rebase_onto_upstream(self):
+        # Base commit
+        self._append_prompt("Base commit", "2026-09-04T09:50:00Z")
+        sha_base = self._commit("base.txt", "base", "chore: Base")
+
+        # Feature branch
+        subprocess.run(["git", "checkout", "-b", "feature"], cwd=self.repo_dir, check=True, env=self.env)
+        self._append_prompt("Feature work", "2026-09-04T10:00:00Z")
+        sha_feat = self._commit("feat.txt", "feat", "feat: Feature")
+
+        # Switch to main and add upstream commit
+        subprocess.run(["git", "checkout", "main"], cwd=self.repo_dir, check=True, env=self.env)
+        self._append_prompt("Upstream work", "2026-09-04T10:05:00Z")
+        sha_upstream = self._commit("upstream.txt", "upstream", "chore: Upstream")
+
+        # Switch back to feature and rebase onto main
+        subprocess.run(["git", "checkout", "feature"], cwd=self.repo_dir, check=True, env=self.env)
+        subprocess.run(["git", "rebase", "main"], cwd=self.repo_dir, check=True, env=self.env)
+
+        # Rebased feature commit should have a new hash but retain its prompt note!
+        sha_rebased = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+        self.assertNotEqual(sha_feat, sha_rebased)
+
+        note_raw = gpn.get_note_content(sha_rebased, repo_root=self.repo_dir)
+        self.assertIsNotNone(note_raw)
+        notes = gpn.parse_notes(note_raw)
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0].prompts[0].text, "Feature work")
+
+
 if __name__ == "__main__":
     unittest.main()
