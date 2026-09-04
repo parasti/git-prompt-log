@@ -748,6 +748,44 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertEqual(notes[0].prompts[0].text, "Feature work")
 
+    def test_rebase_drop_narrative_lands_on_replacement_commit(self):
+        # 1. Base commit
+        self._commit("base.txt", "base", "chore: Base commit")
+
+        # 2. First feature commit
+        self._append_prompt("Implement basic audio engine", "2026-09-04T10:05:00Z")
+        sha1 = self._commit("audio.c", "audio", "audio: Implement basic audio engine")
+
+        # 3. Dead-end feature commit
+        self._append_prompt("Try implementing custom Doppler shift calculation in audio update loop", "2026-09-04T10:10:00Z")
+        sha2_dead_end = self._commit("doppler.c", "doppler", "audio: Add custom Doppler calculation")
+
+        # 4. User redirects: drop Doppler commit
+        self._append_prompt("The custom Doppler math is causing distortion. Drop that commit and use OpenAL distance attenuation instead", "2026-09-04T10:15:00Z")
+
+        # Drop sha2 via interactive rebase
+        drop_py = "python3 -c 'import sys; p=sys.argv[1]; lines=open(p).readlines(); lines[1]=\"drop \" + lines[1].split(\" \", 1)[1]; open(p,\"w\").writelines(lines)'"
+        env = self.env.copy()
+        env["GIT_SEQUENCE_EDITOR"] = drop_py
+        subprocess.run(["git", "rebase", "-i", "HEAD~2"], cwd=self.repo_dir, check=True, env=env)
+
+        # 5. Replacement commit authored
+        sha3 = self._commit("openal.c", "openal", "audio: Configure OpenAL distance attenuation")
+
+        # Verify sha1 has ONLY prompt 1
+        note1_raw = gpn.get_note_content(sha1, repo_root=self.repo_dir)
+        notes1 = gpn.parse_notes(note1_raw)
+        self.assertEqual(len(notes1[0].prompts), 1)
+        self.assertEqual(notes1[0].prompts[0].text, "Implement basic audio engine")
+
+        # Verify replacement commit sha3 has BOTH the dead-end prompt and the redirection prompt
+        note3_raw = gpn.get_note_content(sha3, repo_root=self.repo_dir)
+        self.assertIsNotNone(note3_raw)
+        notes3 = gpn.parse_notes(note3_raw)
+        self.assertEqual(len(notes3[0].prompts), 2)
+        self.assertEqual(notes3[0].prompts[0].text, "Try implementing custom Doppler shift calculation in audio update loop")
+        self.assertEqual(notes3[0].prompts[1].text, "The custom Doppler math is causing distortion. Drop that commit and use OpenAL distance attenuation instead")
+
 
 if __name__ == "__main__":
     unittest.main()
