@@ -80,6 +80,29 @@ git prompt-log record --drop "temporary scratch"
 
 # Drop the last N prompts before recording
 git prompt-log record --drop-last 1
+
+# Record a prompt directly without transcript (human or external script)
+git prompt-log record -m "Implemented authentication pipeline"
+
+# Pipe prompt from standard input
+echo "Refactor caching layer" | git prompt-log record --stdin
+
+# Record with explicit harness and model attribution
+git prompt-log record -m "System architecture design" --harness "Human Dev" --model "Manual"
+```
+
+### Ingestion Adapters (Multi-Harness Support)
+`git-prompt-log` supports pluggable ingestion adapters (`antigravity`, `claude`, `aider`, `direct`):
+```bash
+# List all registered adapters and their detection status in current environment
+git prompt-log adapters
+
+# Output adapter details as JSON
+git prompt-log adapters --json
+
+# Explicitly record using a specific adapter
+git prompt-log record --adapter claude -c HEAD
+git prompt-log record --adapter aider -c HEAD
 ```
 
 ### Interactive Note Editing

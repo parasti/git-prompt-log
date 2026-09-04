@@ -6,6 +6,7 @@ Records AI session metadata and steering prompts directly onto git notes,
 and provides deterministic prompt merging across git rebase, squash, and amend.
 """
 
+import abc
 import argparse
 import datetime
 import json
@@ -17,7 +18,7 @@ import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 
 DEFAULT_NOTES_REF = "refs/notes/commits"
@@ -523,16 +524,828 @@ def format_utc(dt_str: str) -> str:
         return dt_str
 
 
-def get_agent_identity() -> Tuple[str, str]:
-    """Returns (harness_str, default_model_str)."""
-    harness = "Antigravity CLI"
-    try:
-        out = subprocess.check_output(["agy", "--version"], text=True, stderr=subprocess.DEVNULL).strip()
-        if out:
-            harness = f"Antigravity CLI {out}"
-    except Exception:
+def process_prompt_turns(
+    raw_turns: List[Tuple[str, str]],
+    custom_patterns: Optional[List[str]] = None,
+) -> List[PromptEntry]:
+    """Processes sequential prompt turns, applying in-chat retraction, resets, and exclusions."""
+    prompts: List[PromptEntry] = []
+
+    for ts, clean in raw_turns:
+        if not clean:
+            continue
+
+        # 1. Whole-session reset: [ignore-all]
+        m_all = IGNORE_ALL_RE.match(clean)
+        if m_all:
+            prompts.clear()
+            remaining = m_all.group(1).strip() if m_all.group(1) else ""
+            if remaining and not is_ignored_prompt(remaining, custom_patterns=custom_patterns):
+                prompts.append(PromptEntry(timestamp=ts, text=remaining))
+            continue
+
+        # 2. Targeted prompt retraction: [retract "Commit"], [drop-prompt 2], [retract #2]
+        m_target = IGNORE_TARGET_RE.match(clean)
+        if m_target:
+            t_str = (
+                m_target.group(1)
+                or m_target.group(2)
+                or m_target.group(3)
+                or m_target.group(6)
+                or m_target.group(7)
+                or m_target.group(8)
+                or m_target.group(10)
+                or m_target.group(11)
+                or m_target.group(12)
+            )
+            t_idx = m_target.group(4) or m_target.group(5) or m_target.group(9)
+            if t_idx:
+                idx = int(t_idx) - 1
+                if 0 <= idx < len(prompts):
+                    prompts.pop(idx)
+            elif t_str:
+                prompts = [p for p in prompts if not _safe_search(t_str, p.text)]
+            remaining = m_target.group(13).strip() if m_target.group(13) else ""
+            if remaining and not is_ignored_prompt(remaining, custom_patterns=custom_patterns):
+                prompts.append(PromptEntry(timestamp=ts, text=remaining))
+            continue
+
+        # 3. Retract previous N prompts: [ignore-last], [ignore-prev 2], [retract]
+        m_last = IGNORE_LAST_RE.match(clean)
+        if m_last:
+            n_str = m_last.group(1) or m_last.group(2) or m_last.group(3)
+            n = int(n_str) if n_str else 1
+            for _ in range(min(n, len(prompts))):
+                prompts.pop()
+            remaining = m_last.group(4).strip() if m_last.group(4) else ""
+            if remaining and not is_ignored_prompt(remaining, custom_patterns=custom_patterns):
+                prompts.append(PromptEntry(timestamp=ts, text=remaining))
+            continue
+
+        # 4. Standalone oops/wrong-session marker retracting previous prompt: [wrong-session]
+        if STANDALONE_RETRACT_RE.match(clean):
+            if prompts:
+                prompts.pop()
+            continue
+
+        # 5. Prompt explicitly marked to ignore or matching custom exclusion pattern:
+        if is_ignored_prompt(clean, custom_patterns=custom_patterns):
+            continue
+
+        prompts.append(PromptEntry(timestamp=ts, text=clean))
+
+    return prompts
+
+
+def apply_session_excludes_filter(
+    session_id: str,
+    prompts: List[PromptEntry],
+    repo_root: Optional[Path] = None,
+    custom_patterns: Optional[List[str]] = None,
+) -> List[PromptEntry]:
+    """Filters prompts according to session-specific exclusions and patterns."""
+    session_excludes = load_session_excludes(session_id, repo_root=repo_root)
+    if not session_excludes:
+        return prompts
+    pat_list = list(custom_patterns or []) + list(session_excludes.get("patterns", []))
+    ts_list = set(session_excludes.get("timestamps", []))
+    idx_set = set(session_excludes.get("indices", []))
+
+    filtered: List[PromptEntry] = []
+    for i, p in enumerate(prompts, start=1):
+        if i in idx_set:
+            continue
+        if p.timestamp in ts_list:
+            continue
+        if any(_safe_search(pat, p.text) for pat in pat_list):
+            continue
+        filtered.append(p)
+    return filtered
+
+
+class BaseIngestionAdapter(abc.ABC):
+    """Abstract base class for AI coding assistant transcript ingestion adapters."""
+
+    name: str = "base"
+    display_name: str = "Base Adapter"
+
+    @abc.abstractmethod
+    def is_active(self, repo_root: Optional[Path] = None) -> bool:
+        """Returns True if this harness is currently running in the active process or environment."""
         pass
-    return harness, "Gemini 3.8 Flash (High)"
+
+    @abc.abstractmethod
+    def detect_session_id(self, repo_root: Optional[Path] = None) -> Optional[str]:
+        """Returns the active session identifier if detected."""
+        pass
+
+    @abc.abstractmethod
+    def get_agent_identity(self, detected_model: Optional[str] = None) -> Tuple[str, str]:
+        """Returns (harness_name_version, model_name)."""
+        pass
+
+    @abc.abstractmethod
+    def find_session_data(
+        self,
+        session_id: Optional[str] = None,
+        repo_root: Optional[Path] = None,
+        max_age_seconds: Optional[int] = None,
+        custom_patterns: Optional[List[str]] = None,
+        apply_session_excludes: bool = True,
+        extra_options: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Extracts session turns returning:
+        {
+            "session_id": str,
+            "detected_model": Optional[str],
+            "harness": Optional[str],
+            "prompts": List[PromptEntry],
+        }
+        or None if no session found.
+        """
+        pass
+
+
+class AntigravityAdapter(BaseIngestionAdapter):
+    name = "antigravity"
+    display_name = "Antigravity CLI"
+
+    def is_active(self, repo_root: Optional[Path] = None) -> bool:
+        return bool(os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID"))
+
+    def detect_session_id(self, repo_root: Optional[Path] = None) -> Optional[str]:
+        return os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+
+    def get_agent_identity(self, detected_model: Optional[str] = None) -> Tuple[str, str]:
+        harness = "Antigravity CLI"
+        try:
+            out = subprocess.check_output(["agy", "--version"], text=True, stderr=subprocess.DEVNULL).strip()
+            if out:
+                harness = f"Antigravity CLI {out}"
+        except Exception:
+            pass
+        return harness, detected_model or "Gemini 3.8 Flash (High)"
+
+    def parse_transcript(
+        self,
+        transcript_path: Path,
+        custom_patterns: Optional[List[str]] = None,
+        apply_session_excludes: bool = True,
+        repo_root: Optional[Path] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not transcript_path.exists():
+            return None
+
+        full_transcript = transcript_path.parent / "transcript_full.jsonl"
+        target_path = full_transcript if full_transcript.exists() else transcript_path
+
+        steps = []
+        with open(target_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        steps.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+
+        if not steps:
+            return None
+
+        detected_model = None
+        raw_turns: List[Tuple[str, str]] = []
+
+        for step in steps:
+            stype = step.get("type", "")
+            source = step.get("source", "")
+            content = step.get("content", "")
+            created_at = step.get("created_at", "")
+
+            if content and "Model Selection" in content:
+                m = re.search(
+                    r"Model Selection[`\x27]\s*from\s+.*?\s+to\s+([A-Za-z0-9\.\-_ \(\)]+?)(?:\.\s*No need|\.\n|\.$|<)",
+                    content,
+                )
+                if m:
+                    detected_model = m.group(1).strip()
+
+            if stype == "USER_INPUT" or source == "USER_EXPLICIT":
+                clean = clean_user_prompt(content)
+                if clean:
+                    raw_turns.append((format_utc(created_at), clean))
+
+        prompts = process_prompt_turns(raw_turns, custom_patterns=custom_patterns)
+        cid = transcript_path.parent.parent.parent.name
+        if apply_session_excludes:
+            prompts = apply_session_excludes_filter(cid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
+
+        harness, model = self.get_agent_identity(detected_model)
+        return {
+            "session_id": cid,
+            "detected_model": detected_model,
+            "harness": harness,
+            "prompts": prompts,
+        }
+
+    def find_session_data(
+        self,
+        session_id: Optional[str] = None,
+        repo_root: Optional[Path] = None,
+        max_age_seconds: Optional[int] = None,
+        custom_patterns: Optional[List[str]] = None,
+        apply_session_excludes: bool = True,
+        extra_options: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        brain = get_brain_dir()
+        if not brain.exists():
+            return None
+
+        repo = repo_root or get_repo_root()
+        if custom_patterns is None:
+            custom_patterns = get_configured_exclude_patterns(repo_root=repo)
+
+        effective_sid = session_id or self.detect_session_id(repo_root=repo)
+        if effective_sid:
+            t_path = brain / effective_sid / ".system_generated" / "logs" / "transcript.jsonl"
+            if t_path.exists():
+                return self.parse_transcript(
+                    t_path,
+                    custom_patterns=custom_patterns,
+                    apply_session_excludes=apply_session_excludes,
+                    repo_root=repo,
+                )
+            if session_id:
+                return None
+
+        # Auto-detect latest active session matching repo
+        repo_strs = {str(repo).lower(), repo.name.lower()}
+        matching = []
+        now_ts = datetime.datetime.now().timestamp()
+
+        for cid_dir in brain.iterdir():
+            if not cid_dir.is_dir() or cid_dir.name.startswith("."):
+                continue
+            t_path = cid_dir / ".system_generated" / "logs" / "transcript.jsonl"
+            if not t_path.exists():
+                continue
+
+            try:
+                mtime = t_path.stat().st_mtime
+                if max_age_seconds is not None and (now_ts - mtime) > max_age_seconds:
+                    continue
+
+                with open(t_path, "r", encoding="utf-8", errors="replace") as f:
+                    header = "".join([f.readline() for _ in range(15)]).lower()
+                if any(r in header for r in repo_strs):
+                    matching.append((mtime, t_path))
+            except Exception:
+                continue
+
+        if not matching:
+            return None
+
+        matching.sort(key=lambda x: x[0], reverse=True)
+        return self.parse_transcript(
+            matching[0][1],
+            custom_patterns=custom_patterns,
+            apply_session_excludes=apply_session_excludes,
+            repo_root=repo,
+        )
+
+
+class ClaudeCodeAdapter(BaseIngestionAdapter):
+    name = "claude"
+    display_name = "Claude Code"
+
+    def is_active(self, repo_root: Optional[Path] = None) -> bool:
+        if os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CLAUDE_CONVERSATION_ID"):
+            return True
+        if os.environ.get("CLAUDE_PROJECT_DIR"):
+            return True
+        return False
+
+    def detect_session_id(self, repo_root: Optional[Path] = None) -> Optional[str]:
+        return os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CLAUDE_CONVERSATION_ID")
+
+    def get_agent_identity(self, detected_model: Optional[str] = None) -> Tuple[str, str]:
+        harness = "Claude Code"
+        try:
+            out = subprocess.check_output(["claude", "--version"], text=True, stderr=subprocess.DEVNULL).strip()
+            if out:
+                harness = f"Claude Code {out}"
+        except Exception:
+            pass
+        return harness, detected_model or "Claude 3.7 Sonnet"
+
+    def _get_claude_dirs(self, repo_root: Optional[Path] = None) -> List[Path]:
+        dirs = []
+        custom = os.environ.get("CLAUDE_PROJECT_DIR")
+        if custom:
+            dirs.append(Path(custom))
+        home_projects = Path(os.path.expanduser("~/.claude/projects"))
+        if home_projects.exists():
+            dirs.append(home_projects)
+        home_sessions = Path(os.path.expanduser("~/.claude/sessions"))
+        if home_sessions.exists():
+            dirs.append(home_sessions)
+        if repo_root:
+            in_repo = repo_root / ".claude"
+            if in_repo.exists():
+                dirs.append(in_repo)
+        return dirs
+
+    def parse_transcript_file(
+        self,
+        transcript_path: Path,
+        custom_patterns: Optional[List[str]] = None,
+        apply_session_excludes: bool = True,
+        repo_root: Optional[Path] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not transcript_path.exists():
+            return None
+
+        entries = []
+        try:
+            with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read().strip()
+                if content.startswith("[") and content.endswith("]"):
+                    entries = json.loads(content)
+                elif content.startswith("{") and content.endswith("}") and "\n" not in content.strip():
+                    obj = json.loads(content)
+                    if isinstance(obj, dict):
+                        if "messages" in obj and isinstance(obj["messages"], list):
+                            entries = obj["messages"]
+                        else:
+                            entries = [obj]
+                else:
+                    for line in content.splitlines():
+                        line = line.strip()
+                        if line:
+                            try:
+                                entries.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                pass
+        except Exception:
+            return None
+
+        if not entries:
+            return None
+
+        detected_model = None
+        raw_turns: List[Tuple[str, str]] = []
+        sid = transcript_path.stem
+
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+
+            if item.get("model"):
+                detected_model = str(item["model"])
+            elif isinstance(item.get("message"), dict) and item["message"].get("model"):
+                detected_model = str(item["message"]["model"])
+
+            if item.get("sessionId") or item.get("session_id"):
+                sid = str(item.get("sessionId") or item.get("session_id"))
+
+            role = item.get("role") or item.get("type") or ""
+            if role in ("user", "user_input", "human") or (item.get("type") == "message" and item.get("message", {}).get("role") == "user"):
+                text = ""
+                raw_c = item.get("content") or item.get("message", {}).get("content") or item.get("text")
+                if isinstance(raw_c, str):
+                    text = raw_c
+                elif isinstance(raw_c, list):
+                    parts = []
+                    for p in raw_c:
+                        if isinstance(p, str):
+                            parts.append(p)
+                        elif isinstance(p, dict) and p.get("text"):
+                            parts.append(str(p["text"]))
+                    text = "\n".join(parts)
+
+                clean = clean_user_prompt(text)
+                if clean:
+                    created_at = (
+                        item.get("timestamp")
+                        or item.get("created_at")
+                        or item.get("time")
+                        or item.get("date")
+                        or ""
+                    )
+                    raw_turns.append((format_utc(str(created_at)), clean))
+
+        if not raw_turns and not detected_model:
+            return None
+
+        prompts = process_prompt_turns(raw_turns, custom_patterns=custom_patterns)
+        if apply_session_excludes:
+            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
+
+        harness, model = self.get_agent_identity(detected_model)
+        return {
+            "session_id": sid,
+            "detected_model": detected_model,
+            "harness": harness,
+            "prompts": prompts,
+        }
+
+    def find_session_data(
+        self,
+        session_id: Optional[str] = None,
+        repo_root: Optional[Path] = None,
+        max_age_seconds: Optional[int] = None,
+        custom_patterns: Optional[List[str]] = None,
+        apply_session_excludes: bool = True,
+        extra_options: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        repo = repo_root or get_repo_root()
+        if custom_patterns is None:
+            custom_patterns = get_configured_exclude_patterns(repo_root=repo)
+
+        env_transcript = os.environ.get("CLAUDE_TRANSCRIPT_PATH")
+        if env_transcript and Path(env_transcript).exists():
+            return self.parse_transcript_file(
+                Path(env_transcript),
+                custom_patterns=custom_patterns,
+                apply_session_excludes=apply_session_excludes,
+                repo_root=repo,
+            )
+
+        dirs = self._get_claude_dirs(repo_root=repo)
+        if not dirs:
+            return None
+
+        effective_sid = session_id or self.detect_session_id(repo_root=repo)
+
+        if effective_sid and Path(effective_sid).exists():
+            return self.parse_transcript_file(
+                Path(effective_sid),
+                custom_patterns=custom_patterns,
+                apply_session_excludes=apply_session_excludes,
+                repo_root=repo,
+            )
+
+        candidates: List[Tuple[float, Path]] = []
+        now_ts = datetime.datetime.now().timestamp()
+        repo_strs = {str(repo).lower(), repo.name.lower()}
+
+        for d in dirs:
+            if not d.exists():
+                continue
+            files = []
+            if d.is_file():
+                files = [d]
+            else:
+                for p in d.rglob("*.json*"):
+                    if p.is_file():
+                        files.append(p)
+
+            for fpath in files:
+                if effective_sid and (effective_sid in fpath.stem or effective_sid in str(fpath)):
+                    return self.parse_transcript_file(
+                        fpath,
+                        custom_patterns=custom_patterns,
+                        apply_session_excludes=apply_session_excludes,
+                        repo_root=repo,
+                    )
+
+                try:
+                    mtime = fpath.stat().st_mtime
+                    if max_age_seconds is not None and (now_ts - mtime) > max_age_seconds:
+                        continue
+                    fpath_str = str(fpath).lower()
+                    if any(r in fpath_str for r in repo_strs):
+                        candidates.append((mtime, fpath))
+                except Exception:
+                    continue
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        for _, fpath in candidates:
+            parsed = self.parse_transcript_file(
+                fpath,
+                custom_patterns=custom_patterns,
+                apply_session_excludes=apply_session_excludes,
+                repo_root=repo,
+            )
+            if parsed and parsed.get("prompts"):
+                return parsed
+
+        return None
+
+
+class AiderAdapter(BaseIngestionAdapter):
+    name = "aider"
+    display_name = "Aider"
+
+    def is_active(self, repo_root: Optional[Path] = None) -> bool:
+        if os.environ.get("AIDER_SESSION_ID"):
+            return True
+        repo = repo_root or get_repo_root()
+        if (repo / ".aider.chat.history.md").exists() or (repo / ".aider.input.history").exists():
+            return True
+        return False
+
+    def detect_session_id(self, repo_root: Optional[Path] = None) -> Optional[str]:
+        return os.environ.get("AIDER_SESSION_ID")
+
+    def get_agent_identity(self, detected_model: Optional[str] = None) -> Tuple[str, str]:
+        harness = "Aider"
+        try:
+            out = subprocess.check_output(["aider", "--version"], text=True, stderr=subprocess.DEVNULL).strip()
+            if out:
+                harness = f"Aider {out}"
+        except Exception:
+            pass
+        return harness, detected_model or "Claude 3.7 Sonnet"
+
+    def parse_chat_history(
+        self,
+        history_path: Path,
+        custom_patterns: Optional[List[str]] = None,
+        apply_session_excludes: bool = True,
+        repo_root: Optional[Path] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not history_path.exists():
+            return None
+
+        try:
+            content = history_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
+
+        lines = content.splitlines()
+        detected_model = None
+        raw_turns: List[Tuple[str, str]] = []
+        current_ts = datetime.datetime.fromtimestamp(
+            history_path.stat().st_mtime, tz=datetime.timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S UTC")
+        sid = f"aider-{history_path.parent.name}"
+
+        in_user_prompt = False
+        current_prompt_lines: List[str] = []
+
+        def flush_user_prompt():
+            nonlocal in_user_prompt, current_prompt_lines
+            if in_user_prompt and current_prompt_lines:
+                text = "\n".join(current_prompt_lines).strip()
+                if text:
+                    raw_turns.append((current_ts, text))
+            in_user_prompt = False
+            current_prompt_lines = []
+
+        chat_start_re = re.compile(r"^#\s*aider chat started at\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})", re.IGNORECASE)
+        model_re = re.compile(r"(?:/model|Model:)\s*([a-zA-Z0-9\.\-_/]+)", re.IGNORECASE)
+
+        for line in lines:
+            m_start = chat_start_re.match(line)
+            if m_start:
+                flush_user_prompt()
+                dt_raw = m_start.group(1).strip()
+                current_ts = format_utc(dt_raw)
+                sid = f"aider-{dt_raw.replace(' ', '-').replace(':', '')}"
+                continue
+
+            m_mod = model_re.search(line)
+            if m_mod:
+                detected_model = m_mod.group(1).strip()
+
+            if line.startswith("#### "):
+                flush_user_prompt()
+                in_user_prompt = True
+                prompt_line = line[5:].strip()
+                current_prompt_lines = [prompt_line] if prompt_line else []
+            elif in_user_prompt:
+                if not line.strip():
+                    flush_user_prompt()
+                elif line.startswith("# ") or line.startswith("## ") or line.startswith("### ") or line.startswith("> "):
+                    flush_user_prompt()
+                else:
+                    current_prompt_lines.append(line)
+
+        flush_user_prompt()
+
+        if not raw_turns:
+            input_history = history_path.parent / ".aider.input.history"
+            if input_history.exists():
+                try:
+                    for iline in input_history.read_text(encoding="utf-8", errors="replace").splitlines():
+                        iline = iline.strip()
+                        if iline and not iline.startswith("/"):
+                            raw_turns.append((current_ts, iline))
+                except Exception:
+                    pass
+
+        if not raw_turns:
+            return None
+
+        prompts = process_prompt_turns(raw_turns, custom_patterns=custom_patterns)
+        if apply_session_excludes:
+            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
+
+        harness, model = self.get_agent_identity(detected_model)
+        return {
+            "session_id": sid,
+            "detected_model": detected_model,
+            "harness": harness,
+            "prompts": prompts,
+        }
+
+    def find_session_data(
+        self,
+        session_id: Optional[str] = None,
+        repo_root: Optional[Path] = None,
+        max_age_seconds: Optional[int] = None,
+        custom_patterns: Optional[List[str]] = None,
+        apply_session_excludes: bool = True,
+        extra_options: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        repo = repo_root or get_repo_root()
+        if custom_patterns is None:
+            custom_patterns = get_configured_exclude_patterns(repo_root=repo)
+
+        candidates = [
+            repo / ".aider.chat.history.md",
+            repo / ".aider.input.history",
+            Path(os.path.expanduser("~/.aider.chat.history.md")),
+        ]
+        for c in candidates:
+            if c.exists():
+                data = self.parse_chat_history(
+                    c,
+                    custom_patterns=custom_patterns,
+                    apply_session_excludes=apply_session_excludes,
+                    repo_root=repo,
+                )
+                if data and data.get("prompts"):
+                    if session_id:
+                        data["session_id"] = session_id
+                    return data
+        return None
+
+
+class DirectAdapter(BaseIngestionAdapter):
+    name = "direct"
+    display_name = "Direct / Manual Entry"
+
+    def is_active(self, repo_root: Optional[Path] = None) -> bool:
+        return False
+
+    def detect_session_id(self, repo_root: Optional[Path] = None) -> Optional[str]:
+        return None
+
+    def get_agent_identity(self, detected_model: Optional[str] = None) -> Tuple[str, str]:
+        return "Direct CLI", detected_model or "Manual"
+
+    def find_session_data(
+        self,
+        session_id: Optional[str] = None,
+        repo_root: Optional[Path] = None,
+        max_age_seconds: Optional[int] = None,
+        custom_patterns: Optional[List[str]] = None,
+        apply_session_excludes: bool = True,
+        extra_options: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        extra = extra_options or {}
+        msg = extra.get("message")
+        if not msg:
+            return None
+
+        now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        prompts = process_prompt_turns([(now_utc, msg.strip())], custom_patterns=custom_patterns)
+        if not prompts:
+            return None
+
+        sid = session_id or f"direct-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+        if apply_session_excludes:
+            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
+
+        return {
+            "session_id": sid,
+            "detected_model": "Manual",
+            "harness": "Direct CLI",
+            "prompts": prompts,
+        }
+
+
+class AdapterRegistry:
+    """Registry coordinating discovery and selection of assistant ingestion adapters."""
+
+    def __init__(self):
+        self._adapters: Dict[str, BaseIngestionAdapter] = {}
+        self._order: List[str] = []
+
+    def register(self, adapter: BaseIngestionAdapter) -> None:
+        self._adapters[adapter.name] = adapter
+        if adapter.name not in self._order:
+            self._order.append(adapter.name)
+
+    def get(self, name: str) -> Optional[BaseIngestionAdapter]:
+        return self._adapters.get(name)
+
+    def list_adapters(self) -> List[BaseIngestionAdapter]:
+        return [self._adapters[k] for k in self._order]
+
+    def detect_active_adapter(
+        self,
+        repo_root: Optional[Path] = None,
+        preferred_name: Optional[str] = None,
+    ) -> Optional[BaseIngestionAdapter]:
+        if preferred_name and preferred_name != "auto":
+            return self.get(preferred_name)
+        for name in self._order:
+            if name == "direct":
+                continue
+            adapter = self._adapters[name]
+            if adapter.is_active(repo_root=repo_root):
+                return adapter
+        return None
+
+    def find_session_data(
+        self,
+        adapter_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+        repo_root: Optional[Path] = None,
+        max_age_seconds: Optional[int] = None,
+        custom_patterns: Optional[List[str]] = None,
+        apply_session_excludes: bool = True,
+        extra_options: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Optional[BaseIngestionAdapter], Optional[Dict[str, Any]]]:
+        if adapter_name and adapter_name != "auto":
+            adapter = self.get(adapter_name)
+            if adapter:
+                data = adapter.find_session_data(
+                    session_id=session_id,
+                    repo_root=repo_root,
+                    max_age_seconds=max_age_seconds,
+                    custom_patterns=custom_patterns,
+                    apply_session_excludes=apply_session_excludes,
+                    extra_options=extra_options,
+                )
+                return adapter, data
+            return None, None
+
+        if extra_options and extra_options.get("message"):
+            direct = self.get("direct")
+            if direct:
+                data = direct.find_session_data(
+                    session_id=session_id,
+                    repo_root=repo_root,
+                    max_age_seconds=max_age_seconds,
+                    custom_patterns=custom_patterns,
+                    apply_session_excludes=apply_session_excludes,
+                    extra_options=extra_options,
+                )
+                if data:
+                    return direct, data
+
+        active = self.detect_active_adapter(repo_root=repo_root)
+        if active:
+            data = active.find_session_data(
+                session_id=session_id,
+                repo_root=repo_root,
+                max_age_seconds=max_age_seconds,
+                custom_patterns=custom_patterns,
+                apply_session_excludes=apply_session_excludes,
+                extra_options=extra_options,
+            )
+            if data:
+                return active, data
+            return None, None
+
+        for name in self._order:
+            if name == "direct":
+                continue
+            adapter = self._adapters[name]
+            data = adapter.find_session_data(
+                session_id=session_id,
+                repo_root=repo_root,
+                max_age_seconds=max_age_seconds,
+                custom_patterns=custom_patterns,
+                apply_session_excludes=apply_session_excludes,
+                extra_options=extra_options,
+            )
+            if data:
+                return adapter, data
+
+        return None, None
+
+
+REGISTRY = AdapterRegistry()
+REGISTRY.register(AntigravityAdapter())
+REGISTRY.register(ClaudeCodeAdapter())
+REGISTRY.register(AiderAdapter())
+REGISTRY.register(DirectAdapter())
+
+
+def get_agent_identity() -> Tuple[str, str]:
+    """Returns (harness_str, default_model_str) for active or default adapter."""
+    adapter = REGISTRY.detect_active_adapter() or REGISTRY.get("antigravity")
+    if adapter:
+        return adapter.get_agent_identity()
+    return "Antigravity CLI", "Gemini 3.8 Flash (High)"
 
 
 def parse_session_transcript(
@@ -541,131 +1354,16 @@ def parse_session_transcript(
     apply_session_excludes: bool = True,
     repo_root: Optional[Path] = None,
 ) -> Optional[Dict]:
-    """Parses transcript_full.jsonl or transcript.jsonl into user prompt turns."""
-    if not transcript_path.exists():
-        return None
-
-    full_transcript = transcript_path.parent / "transcript_full.jsonl"
-    target_path = full_transcript if full_transcript.exists() else transcript_path
-
-    steps = []
-    with open(target_path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    steps.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-
-    if not steps:
-        return None
-
-    detected_model = None
-    prompts: List[PromptEntry] = []
-
-    for step in steps:
-        stype = step.get("type", "")
-        source = step.get("source", "")
-        content = step.get("content", "")
-        created_at = step.get("created_at", "")
-
-        if content and "Model Selection" in content:
-            m = re.search(
-                r"Model Selection[`\x27]\s*from\s+.*?\s+to\s+([A-Za-z0-9\.\-_ \(\)]+?)(?:\.\s*No need|\.\n|\.$|<)",
-                content,
-            )
-            if m:
-                detected_model = m.group(1).strip()
-
-        if stype == "USER_INPUT" or source == "USER_EXPLICIT":
-            clean = clean_user_prompt(content)
-            if not clean:
-                continue
-
-            # 1. Whole-session reset: [ignore-all]
-            m_all = IGNORE_ALL_RE.match(clean)
-            if m_all:
-                prompts.clear()
-                remaining = m_all.group(1).strip() if m_all.group(1) else ""
-                if remaining and not is_ignored_prompt(remaining, custom_patterns=custom_patterns):
-                    prompts.append(PromptEntry(timestamp=format_utc(created_at), text=remaining))
-                continue
-
-            # 2. Targeted prompt retraction: [retract "Commit"], [drop-prompt 2], [retract #2]
-            m_target = IGNORE_TARGET_RE.match(clean)
-            if m_target:
-                t_str = (
-                    m_target.group(1)
-                    or m_target.group(2)
-                    or m_target.group(3)
-                    or m_target.group(6)
-                    or m_target.group(7)
-                    or m_target.group(8)
-                    or m_target.group(10)
-                    or m_target.group(11)
-                    or m_target.group(12)
-                )
-                t_idx = m_target.group(4) or m_target.group(5) or m_target.group(9)
-                if t_idx:
-                    idx = int(t_idx) - 1
-                    if 0 <= idx < len(prompts):
-                        prompts.pop(idx)
-                elif t_str:
-                    prompts = [p for p in prompts if not _safe_search(t_str, p.text)]
-                remaining = m_target.group(13).strip() if m_target.group(13) else ""
-                if remaining and not is_ignored_prompt(remaining, custom_patterns=custom_patterns):
-                    prompts.append(PromptEntry(timestamp=format_utc(created_at), text=remaining))
-                continue
-
-            # 3. Retract previous N prompts: [ignore-last], [ignore-prev 2], [retract]
-            m_last = IGNORE_LAST_RE.match(clean)
-            if m_last:
-                n_str = m_last.group(1) or m_last.group(2) or m_last.group(3)
-                n = int(n_str) if n_str else 1
-                for _ in range(min(n, len(prompts))):
-                    prompts.pop()
-                remaining = m_last.group(4).strip() if m_last.group(4) else ""
-                if remaining and not is_ignored_prompt(remaining, custom_patterns=custom_patterns):
-                    prompts.append(PromptEntry(timestamp=format_utc(created_at), text=remaining))
-                continue
-
-            # 4. Standalone oops/wrong-session marker retracting previous prompt: [wrong-session]
-            if STANDALONE_RETRACT_RE.match(clean):
-                if prompts:
-                    prompts.pop()
-                continue
-
-            # 5. Prompt explicitly marked to ignore or matching custom exclusion pattern:
-            if is_ignored_prompt(clean, custom_patterns=custom_patterns):
-                continue
-
-            prompts.append(PromptEntry(timestamp=format_utc(created_at), text=clean))
-
-    cid = transcript_path.parent.parent.parent.name
-    if apply_session_excludes:
-        session_excludes = load_session_excludes(cid, repo_root=repo_root)
-        if session_excludes:
-            pat_list = session_excludes.get("patterns", [])
-            ts_list = session_excludes.get("timestamps", [])
-            idx_set = set(session_excludes.get("indices", []))
-
-            filtered_prompts: List[PromptEntry] = []
-            for i, p in enumerate(prompts, start=1):
-                if i in idx_set:
-                    continue
-                if p.timestamp in ts_list:
-                    continue
-                if any(_safe_search(pat, p.text) for pat in pat_list):
-                    continue
-                filtered_prompts.append(p)
-            prompts = filtered_prompts
-
-    return {
-        "session_id": cid,
-        "detected_model": detected_model,
-        "prompts": prompts,
-    }
+    """Parses transcript into user prompt turns (delegates to AntigravityAdapter)."""
+    antigravity_adapter = REGISTRY.get("antigravity")
+    if isinstance(antigravity_adapter, AntigravityAdapter):
+        return antigravity_adapter.parse_transcript(
+            transcript_path,
+            custom_patterns=custom_patterns,
+            apply_session_excludes=apply_session_excludes,
+            repo_root=repo_root,
+        )
+    return None
 
 
 def is_rebase_in_progress(repo_root: Optional[Path] = None) -> bool:
@@ -687,52 +1385,53 @@ def find_session_transcript(
     max_age_seconds: Optional[int] = None,
     custom_patterns: Optional[List[str]] = None,
 ) -> Optional[Dict]:
-    """Finds and parses the appropriate session transcript."""
-    brain = get_brain_dir()
-    if not brain.exists():
-        return None
+    """Finds and parses the appropriate session transcript (delegates to REGISTRY)."""
+    _, data = REGISTRY.find_session_data(
+        adapter_name="auto",
+        session_id=session_id,
+        repo_root=repo_root,
+        max_age_seconds=max_age_seconds,
+        custom_patterns=custom_patterns,
+    )
+    return data
 
-    repo = repo_root or get_repo_root()
-    if custom_patterns is None:
-        custom_patterns = get_configured_exclude_patterns(repo_root=repo)
 
-    if session_id:
-        t_path = brain / session_id / ".system_generated" / "logs" / "transcript.jsonl"
-        if t_path.exists():
-            return parse_session_transcript(t_path, custom_patterns=custom_patterns)
-        return None
+def cmd_adapters(args: argparse.Namespace) -> int:
+    """Displays registered and active AI assistant ingestion adapters."""
+    repo_root = get_repo_root()
+    active = REGISTRY.detect_active_adapter(repo_root=repo_root)
+    adapters = REGISTRY.list_adapters()
 
-    # Auto-detect latest active session matching repo
-    repo_strs = {str(repo).lower(), repo.name.lower()}
+    if getattr(args, "json", False):
+        info = {
+            "active": active.name if active else None,
+            "adapters": [
+                {
+                    "name": a.name,
+                    "display_name": a.display_name,
+                    "active": a.is_active(repo_root=repo_root),
+                    "detected_session": a.detect_session_id(repo_root=repo_root),
+                }
+                for a in adapters
+            ],
+        }
+        print(json.dumps(info, indent=2))
+        return 0
 
-    matching = []
-    now_ts = datetime.datetime.now().timestamp()
+    print("Registered Ingestion Adapters:")
+    for a in adapters:
+        is_act = a.is_active(repo_root=repo_root)
+        status = "active" if is_act else "inactive"
+        sid = a.detect_session_id(repo_root=repo_root)
+        details = f"session: {sid}" if sid else status
+        print(f"  * {a.name:<12} {a.display_name} ({details})")
 
-    for cid_dir in brain.iterdir():
-        if not cid_dir.is_dir() or cid_dir.name.startswith("."):
-            continue
-        t_path = cid_dir / ".system_generated" / "logs" / "transcript.jsonl"
-        if not t_path.exists():
-            continue
-
-        try:
-            mtime = t_path.stat().st_mtime
-            if max_age_seconds is not None and (now_ts - mtime) > max_age_seconds:
-                continue
-
-            with open(t_path, "r", encoding="utf-8", errors="replace") as f:
-                header = "".join([f.readline() for _ in range(15)]).lower()
-            if any(r in header for r in repo_strs):
-                matching.append((mtime, t_path))
-        except Exception:
-            continue
-
-    if not matching:
-        return None
-
-    # Pick most recently modified session
-    matching.sort(key=lambda x: x[0], reverse=True)
-    return parse_session_transcript(matching[0][1], custom_patterns=custom_patterns)
+    if active:
+        sid = active.detect_session_id(repo_root=repo_root)
+        print(f"\nActive Harness: {active.display_name}" + (f" (session: {sid})" if sid else ""))
+    else:
+        print("\nActive Harness: None (Standard Git / Human Shell)")
+    return 0
 
 
 # --- Core Command Implementations ---
@@ -761,7 +1460,24 @@ def cmd_record(args: argparse.Namespace) -> int:
         if args.exclude not in exclude_patterns:
             exclude_patterns.append(args.exclude)
 
-    session_data = find_session_transcript(args.session, repo_root=repo_root, custom_patterns=exclude_patterns)
+    message_input = getattr(args, "message", None)
+    if getattr(args, "stdin", False):
+        if not sys.stdin.isatty():
+            message_input = sys.stdin.read().strip()
+        elif not message_input:
+            sys.stderr.write("Reading prompt from stdin (press Ctrl+D when finished):\n")
+            message_input = sys.stdin.read().strip()
+
+    extra_options = {"message": message_input}
+    adapter_name = getattr(args, "adapter", "auto")
+
+    adapter, session_data = REGISTRY.find_session_data(
+        adapter_name=adapter_name,
+        session_id=args.session,
+        repo_root=repo_root,
+        custom_patterns=exclude_patterns,
+        extra_options=extra_options,
+    )
 
     # If the commit already has existing notes, merge with them while preserving non-prompt content
     existing_raw = get_note_content(commit_hash, ref=ref, repo_root=repo_root) or ""
@@ -778,22 +1494,26 @@ def cmd_record(args: argparse.Namespace) -> int:
             sys.stderr.write("No matching agent session transcript found.\n")
             return 1
     else:
-        harness, def_model = get_agent_identity()
-        model = session_data.get("detected_model") or def_model
+        harness_def, def_model = adapter.get_agent_identity(session_data.get("detected_model")) if adapter else ("Unknown", "Unknown")
+        harness = getattr(args, "harness", None) or session_data.get("harness") or harness_def
+        model = getattr(args, "model", None) or session_data.get("detected_model") or def_model
         session_id = session_data["session_id"]
         all_prompts: List[PromptEntry] = session_data.get("prompts", [])
 
         commit_sort_ts = parse_timestamp_sort_key(commit_date_utc)
         target_prompts = []
 
-        for p in all_prompts:
-            pts = parse_timestamp_sort_key(p.timestamp)
-            if pts <= commit_sort_ts:
-                target_prompts.append(p)
-
-        if not target_prompts and all_prompts:
-            # Fallback to all session prompts if commit timestamp slightly precedes prompt log
+        if adapter and adapter.name == "direct":
             target_prompts = list(all_prompts)
+        else:
+            for p in all_prompts:
+                pts = parse_timestamp_sort_key(p.timestamp)
+                if pts <= commit_sort_ts:
+                    target_prompts.append(p)
+
+            if not target_prompts and all_prompts:
+                # Fallback to all session prompts if commit timestamp slightly precedes prompt log
+                target_prompts = list(all_prompts)
 
         if exclude_patterns:
             target_prompts = [
@@ -896,22 +1616,27 @@ def cmd_record(args: argparse.Namespace) -> int:
 def cmd_post_commit(args: argparse.Namespace) -> int:
     """
     Called by .git/hooks/post-commit if installed.
-    Strictly requires an active agent environment variable (AGY_SESSION_ID or
-    ANTIGRAVITY_CONVERSATION_ID) so human commits in ordinary shells are never hijacked.
+    Strictly requires an active agent environment so human commits in ordinary shells are never hijacked.
     """
     repo_root = get_repo_root()
     if is_rebase_in_progress(repo_root):
         return 0
 
     # Strict causality guard: Only proceed if running within an explicit agent execution context
-    agent_session_id = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
-    if not agent_session_id:
+    active_adapter = REGISTRY.detect_active_adapter(repo_root=repo_root)
+    if not active_adapter:
         return 0
 
-    session_data = find_session_transcript(session_id=agent_session_id, repo_root=repo_root)
+    agent_session_id = active_adapter.detect_session_id(repo_root=repo_root)
+    adapter, session_data = REGISTRY.find_session_data(
+        adapter_name=active_adapter.name,
+        session_id=agent_session_id,
+        repo_root=repo_root,
+    )
     if not session_data or not session_data.get("prompts"):
         return 0
 
+    args.adapter = active_adapter.name
     args.commit = "HEAD"
     args.session = agent_session_id
     args.dry_run = False
@@ -1990,11 +2715,28 @@ def main():
     p_record = subparsers.add_parser("record", help="Attach prompt note to a commit", parents=[base_parser])
     p_record.add_argument("--commit", "-c", help="Target commit hash or ref (default: HEAD)")
     p_record.add_argument("--session", "-s", help="Explicit session conversation ID UUID")
+    p_record.add_argument(
+        "--adapter",
+        "-a",
+        choices=["auto", "antigravity", "claude", "aider", "direct"],
+        default="auto",
+        help="Ingestion adapter (auto, antigravity, claude, aider, direct)",
+    )
+    p_record.add_argument("--message", "-m", help="Directly record prompt text without transcript")
+    p_record.add_argument("--stdin", action="store_true", help="Read direct prompt text from standard input")
+    p_record.add_argument("--harness", help="Override harness name string in note")
+    p_record.add_argument("--model", help="Override model name string in note")
     p_record.add_argument("--exclude", "--drop", help="Exclude prompts matching regex pattern")
     p_record.add_argument("--drop-last", type=int, default=0, help="Exclude last N prompts")
     p_record.add_argument("--edit", "-e", action="store_true", help="Edit note in $EDITOR before saving")
     p_record.add_argument("--quiet", "-q", action="store_true", help="Suppress confirmation message")
     p_record.add_argument("--dry-run", "-n", action="store_true", help="Print note without writing to git")
+
+    # adapters
+    p_adapters = subparsers.add_parser(
+        "adapters", help="List supported and active AI ingestion adapters", parents=[base_parser]
+    )
+    p_adapters.add_argument("--json", action="store_true", help="Output adapter information as JSON")
 
     # post-commit
     p_post_commit = subparsers.add_parser(
@@ -2105,6 +2847,8 @@ def main():
         sys.exit(cmd_uninstall_hook(args))
     elif args.command == "record":
         sys.exit(cmd_record(args))
+    elif args.command == "adapters":
+        sys.exit(cmd_adapters(args))
     elif args.command == "session":
         sys.exit(cmd_session(args))
     elif args.command == "edit":

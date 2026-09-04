@@ -194,6 +194,43 @@ Prompts can also be filtered or modified retroactively via the CLI:
 
 ---
 
+## Ingestion Adapters & Direct Recording
+
+`git-prompt-log` features a pluggable adapter architecture to ingest prompts from different coding agent harnesses or manual human entry:
+
+| Adapter | Source / Harness | Signals & Transcripts |
+| :--- | :--- | :--- |
+| `antigravity` | Google Antigravity CLI | `$AGY_SESSION_ID`, `$ANTIGRAVITY_CONVERSATION_ID`, `brain/` |
+| `claude` | Claude Code | `$CLAUDE_SESSION_ID`, `~/.claude/projects/`, `$CLAUDE_TRANSCRIPT_PATH` |
+| `aider` | Aider | `$AIDER_SESSION_ID`, `.aider.chat.history.md`, `.aider.input.history` |
+| `direct` | Human / Manual Entry | `-m / --message "..."` or `--stdin` |
+
+### Inspecting Adapters
+
+Inspect registered adapters, detection status in your current shell, and active sessions:
+
+```bash
+git prompt-log adapters
+git prompt-log adapters --json
+```
+
+### Direct Prompt Recording (Human or Scripted)
+
+For commits authored directly by humans or piped from external scripts:
+
+```bash
+# Record prompt directly on HEAD
+git prompt-log record -m "Implement OAuth authentication flow"
+
+# Pipe prompt via standard input
+echo "Refactor database query batching" | git prompt-log record --stdin
+
+# Specify custom harness and model metadata
+git prompt-log record -m "Initial schema proposal" --harness "Human" --model "Manual"
+```
+
+---
+
 ## Uninstallation
 
 To remove Git hooks and repository configuration:

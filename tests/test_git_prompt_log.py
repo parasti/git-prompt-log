@@ -1184,5 +1184,187 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         self.assertIn("Accidental query about unrelated project", prompts2_undropped)
 
 
+class TestIngestionAdapters(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.work_dir = Path(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_registry_listing_and_lookup(self):
+        adapters = gpn.REGISTRY.list_adapters()
+        names = [a.name for a in adapters]
+        self.assertIn("antigravity", names)
+        self.assertIn("claude", names)
+        self.assertIn("aider", names)
+        self.assertIn("direct", names)
+
+        self.assertIsInstance(gpn.REGISTRY.get("antigravity"), gpn.AntigravityAdapter)
+        self.assertIsInstance(gpn.REGISTRY.get("claude"), gpn.ClaudeCodeAdapter)
+        self.assertIsInstance(gpn.REGISTRY.get("aider"), gpn.AiderAdapter)
+        self.assertIsInstance(gpn.REGISTRY.get("direct"), gpn.DirectAdapter)
+
+    def test_claude_adapter_parsing_jsonl(self):
+        transcript = self.work_dir / "claude-session.jsonl"
+        lines = [
+            json.dumps({"type": "user", "message": {"content": "Build ingestion adapter"}, "timestamp": "2026-09-04T12:00:00Z"}),
+            json.dumps({"type": "assistant", "message": {"model": "claude-3-7-sonnet"}}),
+            json.dumps({"type": "user", "message": {"content": "[ignore] accidental prompt"}, "timestamp": "2026-09-04T12:01:00Z"}),
+            json.dumps({"type": "user", "message": {"content": "Add unit tests"}, "timestamp": "2026-09-04T12:02:00Z"}),
+        ]
+        transcript.write_text("\n".join(lines), encoding="utf-8")
+
+        adapter = gpn.ClaudeCodeAdapter()
+        parsed = adapter.parse_transcript_file(transcript)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["detected_model"], "claude-3-7-sonnet")
+        prompts = [p.text for p in parsed["prompts"]]
+        self.assertEqual(prompts, ["Build ingestion adapter", "Add unit tests"])
+
+    def test_claude_adapter_parsing_json_array(self):
+        transcript = self.work_dir / "session.json"
+        data = [
+            {"role": "user", "content": [{"type": "text", "text": "First user message"}], "timestamp": "2026-09-04T10:00:00Z", "model": "claude-3-5-haiku"},
+            {"role": "assistant", "content": "Sure, here is the answer."},
+            {"role": "user", "content": "Second user message", "timestamp": "2026-09-04T10:05:00Z"},
+        ]
+        transcript.write_text(json.dumps(data), encoding="utf-8")
+
+        adapter = gpn.ClaudeCodeAdapter()
+        parsed = adapter.parse_transcript_file(transcript)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["detected_model"], "claude-3-5-haiku")
+        prompts = [p.text for p in parsed["prompts"]]
+        self.assertEqual(prompts, ["First user message", "Second user message"])
+
+    def test_aider_adapter_parsing(self):
+        history = self.work_dir / ".aider.chat.history.md"
+        content = """# aider chat started at 2026-09-04 14:00:00
+
+> /model gpt-4o
+
+#### Implement caching layer
+
+Let's implement the cache.
+
+#### [ignore] wrong window
+
+#### Write integration tests for caching
+"""
+        history.write_text(content, encoding="utf-8")
+
+        adapter = gpn.AiderAdapter()
+        parsed = adapter.parse_chat_history(history)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["detected_model"], "gpt-4o")
+        prompts = [p.text for p in parsed["prompts"]]
+        self.assertEqual(prompts, ["Implement caching layer", "Write integration tests for caching"])
+
+    def test_direct_adapter_manual_recording(self):
+        adapter = gpn.DirectAdapter()
+        parsed = adapter.find_session_data(
+            session_id="manual-test-session",
+            extra_options={"message": "Manual steer without transcript file"},
+        )
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["session_id"], "manual-test-session")
+        self.assertEqual(parsed["harness"], "Direct CLI")
+        self.assertEqual(len(parsed["prompts"]), 1)
+        self.assertEqual(parsed["prompts"][0].text, "Manual steer without transcript file")
+
+    def test_direct_record_cli_and_adapters_subcommand(self):
+        repo_dir = self.work_dir / "test_repo"
+        repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+
+        # Commit a file
+        f = repo_dir / "hello.py"
+        f.write_text("print('hello')")
+        subprocess.run(["git", "add", "hello.py"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo_dir, check=True)
+
+        script_path = str(bin_path)
+
+        # 1. Run adapters --json subcommand
+        res = subprocess.run(["python3", script_path, "adapters", "--json"], cwd=repo_dir, capture_output=True, text=True, check=True)
+        data = json.loads(res.stdout)
+        self.assertIn("adapters", data)
+        adapter_names = [a["name"] for a in data["adapters"]]
+        self.assertIn("direct", adapter_names)
+        self.assertIn("claude", adapter_names)
+        self.assertIn("aider", adapter_names)
+
+        # 2. Record direct prompt with -m and custom harness/model
+        cmd_rec = [
+            "python3",
+            script_path,
+            "record",
+            "-m",
+            "Initial prompt from developer",
+            "--harness",
+            "Human Dev",
+            "--model",
+            "Custom Mind",
+            "-c",
+            "HEAD",
+        ]
+        subprocess.run(cmd_rec, cwd=repo_dir, check=True, capture_output=True)
+
+        note_content = gpn.get_note_content("HEAD", repo_root=repo_dir)
+        self.assertIsNotNone(note_content)
+        self.assertIn("Assistant-Harness: Human Dev", note_content)
+        self.assertIn("Assistant-Model: Custom Mind", note_content)
+        self.assertIn("Initial prompt from developer", note_content)
+
+    def test_post_commit_causality_guard_and_claude_hook(self):
+        repo_dir = self.work_dir / "repo_claude"
+        repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+
+        script_path = str(bin_path)
+        subprocess.run(["python3", script_path, "init"], cwd=repo_dir, check=True, capture_output=True)
+
+        # 1. Plain human commit without any agent environment variables
+        f1 = repo_dir / "human.txt"
+        f1.write_text("human")
+        subprocess.run(["git", "add", "human.txt"], cwd=repo_dir, check=True)
+        clean_env = os.environ.copy()
+        for k in list(clean_env.keys()):
+            if "AGY" in k or "ANTIGRAVITY" in k or "CLAUDE" in k or "AIDER" in k:
+                del clean_env[k]
+        clean_env["PATH"] = f"{bin_path.parent}:{clean_env.get('PATH', '')}"
+
+        subprocess.run(["git", "commit", "-m", "Human commit"], cwd=repo_dir, env=clean_env, check=True)
+        self.assertIsNone(gpn.get_note_content("HEAD", repo_root=repo_dir))
+
+        # 2. Commit made within Claude Code session
+        claude_transcript = repo_dir / ".claude" / "history.jsonl"
+        claude_transcript.parent.mkdir(parents=True, exist_ok=True)
+        claude_transcript.write_text(
+            json.dumps({"role": "user", "content": "Refactor auth pipeline", "timestamp": "2026-09-04T18:00:00Z", "model": "claude-3-7-sonnet"}) + "\n",
+            encoding="utf-8",
+        )
+
+        claude_env = clean_env.copy()
+        claude_env["CLAUDE_SESSION_ID"] = "claude-session-999"
+        claude_env["CLAUDE_TRANSCRIPT_PATH"] = str(claude_transcript)
+
+        f2 = repo_dir / "auth.txt"
+        f2.write_text("auth refactored")
+        subprocess.run(["git", "add", "auth.txt"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: Refactor auth"], cwd=repo_dir, env=claude_env, check=True)
+
+        note = gpn.get_note_content("HEAD", repo_root=repo_dir)
+        self.assertIsNotNone(note)
+        self.assertIn("Assistant-Harness: Claude Code", note)
+        self.assertIn("Assistant-Model: claude-3-7-sonnet", note)
+        self.assertIn("Refactor auth pipeline", note)
+
+
 if __name__ == "__main__":
     unittest.main()
