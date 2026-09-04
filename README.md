@@ -20,13 +20,16 @@ cd git-prompt-log
 
 ### Quickstart: Try It On This Repo
 
-`git-prompt-log` is built and developed using `git-prompt-log`. Since Git notes are not cloned by default ([and should not be](#why-export-and-import-instead-of-pushing-notes)), import our exported prompt log to inspect the real prompts that built this codebase:
+`git-prompt-log` is built and developed using `git-prompt-log`. Since Git notes are not cloned by default ([and should not be](#why-export-and-import-instead-of-pushing-notes)), initialize the repository and import our exported prompt log to inspect the real prompts that built this codebase:
 
 ```bash
-# In the cloned git-prompt-log directory, import past prompt notes:
+# 1. Enable prompt logging in this repo (installs hooks & notes rewrite config):
+git prompt-log init
+
+# 2. Import past prompt notes:
 git prompt-log import-log prompts/git-prompt-log.md
 
-# View the commit history with prompt timelines in rich color:
+# 3. View the commit history with prompt timelines in rich color:
 git prompt-log log
 ```
 
@@ -36,21 +39,18 @@ You can view the causal prompt on each commit, or pass `--full` to view the cumu
 git prompt-log log --full
 ```
 
-Next, try live prompt recording on this repo:
+#### Try Live Prompt Recording
 
-```bash
-# 1. Enable prompt logging in this repository:
-git prompt-log init
-```
+Now that the hooks are installed, see automated prompt tracking in action:
 
-2. Ask your coding assistant (e.g. Google Antigravity, Claude Code) to make a change and commit it:
+1. Ask your coding assistant (e.g. Google Antigravity, Claude Code) to make a change and commit it:
    > *"Add a small doc improvement to the README and commit it"*
 
-3. Look at the log again:
+2. Look at the log again:
    ```bash
    git prompt-log log -n 1
    ```
-   Notice that the newly created commit now automatically carries the exact steering prompt you gave your assistant!
+   Notice that the newly created commit automatically carries the exact steering prompt you gave your assistant!
 
 ### The Day-to-Day Workflow
 
