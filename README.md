@@ -193,15 +193,15 @@ Prompts can also be filtered or modified retroactively via the CLI:
 
 ---
 
-## Ingestion Adapters & Manual Recording
+## Supported Agents
 
-`git-prompt-log` features a pluggable adapter architecture to ingest prompts from different coding agent harnesses or manual human entry:
+`git-prompt-log` automatically detects and ingests prompts from supported coding assistants or manual human entry:
 
-| Adapter | Source / Harness | Signals & Transcripts |
+| Agent / Harness | Identifier | Signals & Transcripts |
 | :--- | :--- | :--- |
-| `antigravity` | Google Antigravity CLI | `$AGY_SESSION_ID`, `$ANTIGRAVITY_CONVERSATION_ID`, `brain/` |
-| `claude` | Claude Code | `$CLAUDE_SESSION_ID`, `~/.claude/projects/`, `$CLAUDE_TRANSCRIPT_PATH` |
-| `manual` | Manual Entry | `-m / --message "..."` or `--stdin` |
+| Google Antigravity | `antigravity` | `$AGY_SESSION_ID`, `$ANTIGRAVITY_CONVERSATION_ID`, `brain/` |
+| Claude Code | `claude` | `$CLAUDE_SESSION_ID`, `~/.claude/projects/`, `$CLAUDE_TRANSCRIPT_PATH` |
+| Manual Entry | `manual` | `-m / --message "..."` or `--stdin` |
 
 ### Configuring Your Assistant Harness
 

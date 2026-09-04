@@ -2692,11 +2692,13 @@ def main():
     p_record.add_argument("--commit", "-c", help="Target commit hash or ref (default: HEAD)")
     p_record.add_argument("--session", "-s", help="Explicit session conversation ID UUID")
     p_record.add_argument(
+        "--agent",
         "--adapter",
         "-a",
         choices=["auto", "antigravity", "claude", "manual", "direct"],
         default="auto",
-        help="Ingestion adapter (auto, antigravity, claude, manual)",
+        dest="adapter",
+        help="Target assistant agent (auto, antigravity, claude, manual)",
     )
     p_record.add_argument("--message", "-m", help="Manually record prompt text without transcript")
     p_record.add_argument("--stdin", action="store_true", help="Read manual prompt text from standard input")
@@ -2708,10 +2710,9 @@ def main():
     p_record.add_argument("--quiet", "-q", action="store_true", help="Suppress confirmation message")
     p_record.add_argument("--dry-run", "-n", action="store_true", help="Print note without writing to git")
 
-    # harness / adapter
+    # harness
     p_harness = subparsers.add_parser(
         "harness",
-        aliases=["adapter"],
         help="Get, set, or list assistant harnesses (antigravity, claude, manual)",
         parents=[base_parser],
     )
@@ -2814,7 +2815,7 @@ def main():
         sys.exit(cmd_uninstall_hook(args))
     elif args.command == "record":
         sys.exit(cmd_record(args))
-    elif args.command in ("harness", "adapter"):
+    elif args.command == "harness":
         sys.exit(cmd_harness(args))
     elif args.command == "session":
         sys.exit(cmd_session(args))
