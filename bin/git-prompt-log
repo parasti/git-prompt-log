@@ -2249,10 +2249,10 @@ git prompt-log session clear
 
 ### Filtering and Editing Notes:
 ```bash
-# Exclude prompts matching a regex when manually recording
+# Exclude prompts matching a regex when manually recording (Caveat: Prompt will come back on subsequent commits from the same session; use `git prompt-log session drop` for persistent exclusion)
 git prompt-log record --drop "audio mixer"
 
-# Drop last prompt when recording
+# Drop last prompt when recording (Caveat: Dropped prompts will come back on subsequent commits from the same session)
 git prompt-log record --drop-last 1
 
 # Edit recorded note interactively in $EDITOR
@@ -2566,7 +2566,7 @@ def main():
     p_record.add_argument("--message", "-m", help="Manually record prompt text without transcript")
     p_record.add_argument("--stdin", action="store_true", help="Read manual prompt text from standard input")
     p_record.add_argument("--model", help="Override model name string in note")
-    p_record.add_argument("--exclude", "--drop", help="Exclude prompts matching regex pattern")
+    p_record.add_argument("--exclude", "--drop", help="Exclude prompts matching regex pattern (only affects this commit; prompt returns on subsequent session commits)")
     p_record.add_argument("--drop-last", type=int, default=0, help="Exclude last N prompts")
     p_record.add_argument("--edit", "-e", action="store_true", help="Edit note in $EDITOR before saving")
     p_record.add_argument("--quiet", "-q", action="store_true", help="Suppress confirmation message")

@@ -74,10 +74,10 @@ git prompt-log record
 # Preview without writing to git notes
 git prompt-log record --dry-run
 
-# Exclude prompts matching a regex pattern
+# Exclude prompts matching a regex pattern (Caveat: Prompt will come back on subsequent commits from the same session; use `git prompt-log session drop` for persistent exclusion)
 git prompt-log record --drop "temporary scratch"
 
-# Drop the last N prompts before recording
+# Drop the last N prompts before recording (Caveat: Dropped prompts will come back on subsequent commits from the same session)
 git prompt-log record --drop-last 1
 
 # Record a prompt manually without transcript (human or external script)
@@ -119,7 +119,7 @@ When asked how to inspect, exclude, or retract specific prompts:
   * `git prompt-log session drop <index_or_pattern>`: Mark prompt #N or matching pattern as excluded for this session (automatically updates HEAD's prompt note).
   * `git prompt-log session undrop <index_or_pattern>`: Restore a previously excluded prompt.
   * `git prompt-log session clear`: Clear all exclusions for the session.
-* **Manual recording drop:** Run `git prompt-log record --drop "<pattern>"` (optionally targeting a specific commit with `--commit <SHA>`).
+* **Manual recording drop:** Run `git prompt-log record --drop "<pattern>"` (optionally targeting a specific commit with `--commit <SHA>`). *(Caveat: The prompt will come back on subsequent commits from the same session if edited away in this way; use `git prompt-log session drop` for persistent session exclusion).*
 * **Manual note edit:** Run `git prompt-log edit HEAD` (or `<SHA>`) to edit notes directly in `$EDITOR`.
 
 ### Sharing Notes (Export & Import Only)
