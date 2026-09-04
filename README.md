@@ -20,7 +20,7 @@ cd git-prompt-log
 
 ### Quickstart: Try It On This Repo
 
-`git-prompt-log` is built and developed using `git-prompt-log`. Since Git notes are not cloned by default, import our exported prompt log to inspect the real prompts that built this codebase:
+`git-prompt-log` is built and developed using `git-prompt-log`. Since Git notes are not cloned by default (and should not be—prompt logs are shared via export/import; see [Why Export and Import Instead of Pushing Notes?](#why-export-and-import-instead-of-pushing-notes)), import our exported prompt log to inspect the real prompts that built this codebase:
 
 ```bash
 # In the cloned git-prompt-log directory:
@@ -54,7 +54,7 @@ In practice, **you will almost never run `record` yourself**. Once enabled in a 
 
 ### Pull Requests & Collaboration (Export & Import)
 
-Because Git notes are not pushed or fetched by default during standard `git push` or GitHub PR workflows:
+Git notes are not pushed or fetched by default during standard `git push` or GitHub PR workflows (see [Why Export and Import Instead of Pushing Notes?](#why-export-and-import-instead-of-pushing-notes)):
 
 1. **Export for PR Review:** Before opening a PR, package the accumulated prompt notes into a Markdown log on your branch:
    ```bash
@@ -67,6 +67,15 @@ Because Git notes are not pushed or fetched by default during standard `git push
    git prompt-log import-log prompts/YYYY_MM_DD_HHMMSS_<slug>.md
    ```
    The tool matches commits by commit subject or hash and re-attaches prompt provenance into `refs/notes/commits`.
+
+### Why Export and Import Instead of Pushing Notes?
+
+Git notes are ideal for local, non-invasive metadata storage, but pushing `refs/notes/*` directly to shared remotes creates friction that export and import solve:
+
+- **Visibility in Code Review:** Git notes are invisible in GitHub, GitLab, and Bitbucket pull request diffs and web interfaces. Exporting prompt notes to a Markdown file in `prompts/` ensures that your prompt timeline is reviewable right alongside the code diffs it generated.
+- **Surviving GitHub Squash & Rebase:** When a pull request is squashed or rebased via GitHub's web UI, GitHub generates brand new commit SHAs on `main`. Remote Git notes attached to branch commits are left behind and orphaned. Because the exported Markdown log is committed to the repository, maintainers can run `git prompt-log import-log` on `main` to match commits by subject and re-hydrate prompt provenance onto the new commits.
+- **No Ref Merge Conflicts:** Pushing and fetching `refs/notes/commits` across multiple contributors regularly triggers non-fast-forward rejections. Resolving Git note ref conflicts requires manual `git notes merge` steps that interrupt standard push/pull workflows. Exporting prompt files leverages standard Git file merging and review.
+- **Opt-in Local Namespaces:** Users who clone your repository to use or build the project do not have their local Git notes namespace cluttered or overwritten unless they explicitly choose to import prompt notes.
 
 ### Enable in Any Repository
 
