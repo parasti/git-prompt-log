@@ -2272,11 +2272,11 @@ git prompt-log init
 # Initialize with local repository assistant skill
 git prompt-log init --skill
 
-# Uninstall hooks
-git prompt-log uninstall-hook
+# Deinitialize in a repository (remove hooks)
+git prompt-log deinit
 
 # Completely remove hooks, git config, and local skill
-git prompt-log uninstall-hook --all
+git prompt-log deinit --all
 
 # Record prompt note on HEAD (or --commit <hash>)
 git prompt-log record
@@ -2384,7 +2384,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-# Internal alias
+# Internal aliases
+cmd_install = cmd_init
 cmd_install_hook = cmd_init
 
 
@@ -2435,8 +2436,8 @@ def _uninstall_hook_file(hook_path: Path) -> bool:
         return True
 
 
-def cmd_uninstall_hook(args: argparse.Namespace) -> int:
-    """Uninstalls git-prompt-log hooks, and optionally git config and skills."""
+def cmd_deinit(args: argparse.Namespace) -> int:
+    """Deinitializes git-prompt-log in current repository (hooks, and optionally git config/skills)."""
     repo_root = get_repo_root()
     common_git = get_common_git_dir(repo_root)
     hooks_dir = common_git / "hooks"
@@ -2482,6 +2483,11 @@ def cmd_uninstall_hook(args: argparse.Namespace) -> int:
     return 0
 
 
+# Internal aliases
+cmd_uninstall = cmd_deinit
+cmd_uninstall_hook = cmd_deinit
+
+
 def cmd_edit(args: argparse.Namespace) -> int:
     """Opens git notes in $EDITOR for manual editing."""
     repo_root = get_repo_root()
@@ -2525,6 +2531,7 @@ def main():
     # init
     p_init = subparsers.add_parser(
         "init",
+        aliases=["install"],
         help="Initialize git-prompt-log in current repository (hooks, config)",
         parents=[base_parser],
     )
@@ -2625,18 +2632,18 @@ def main():
     p_edit = subparsers.add_parser("edit", help="Edit prompt note on a commit in $EDITOR", parents=[base_parser])
     p_edit.add_argument("commit", nargs="?", default="HEAD", help="Target commit hash or ref (default: HEAD)")
 
-    # uninstall-hook
-    p_uninstall = subparsers.add_parser(
-        "uninstall-hook",
-        aliases=["uninstall", "uninstall-hooks"],
-        help="Uninstall git-prompt-log hooks (and optionally config/skill)",
+    # deinit
+    p_deinit = subparsers.add_parser(
+        "deinit",
+        aliases=["uninstall"],
+        help="Deinitialize git-prompt-log in current repository (hooks, config, skill)",
         parents=[base_parser],
     )
-    p_uninstall.add_argument("--all", action="store_true", help="Remove hooks, clean git config, and remove skill")
-    p_uninstall.add_argument("--config", dest="with_config", action="store_true", help="Also unset git notes rewrite configs")
-    p_uninstall.add_argument("--skill", dest="with_skill", action="store_true", help="Also remove local .agents skill")
-    p_uninstall.add_argument("--post-commit-only", action="store_true", help="Only uninstall post-commit hook")
-    p_uninstall.add_argument("--post-rewrite-only", action="store_true", help="Only uninstall post-rewrite hook")
+    p_deinit.add_argument("--all", action="store_true", help="Remove hooks, clean git config, and remove skill")
+    p_deinit.add_argument("--config", dest="with_config", action="store_true", help="Also unset git notes rewrite configs")
+    p_deinit.add_argument("--skill", dest="with_skill", action="store_true", help="Also remove local .agents skill")
+    p_deinit.add_argument("--post-commit-only", action="store_true", help="Only uninstall post-commit hook")
+    p_deinit.add_argument("--post-rewrite-only", action="store_true", help="Only uninstall post-rewrite hook")
 
     # export-log
     p_export = subparsers.add_parser(
@@ -2673,10 +2680,10 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "init":
+    if args.command in ("init", "install"):
         sys.exit(cmd_init(args))
-    elif args.command in ("uninstall-hook", "uninstall", "uninstall-hooks"):
-        sys.exit(cmd_uninstall_hook(args))
+    elif args.command in ("deinit", "uninstall"):
+        sys.exit(cmd_deinit(args))
     elif args.command == "record":
         sys.exit(cmd_record(args))
     elif args.command == "harness":

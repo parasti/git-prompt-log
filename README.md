@@ -238,17 +238,19 @@ git prompt-log record -m "Initial schema proposal" --harness "Human" --model "Ma
 
 ---
 
-## Uninstallation
+## Deinitialization & Uninstallation
 
 To remove Git hooks and repository configuration:
 
 ```bash
 # Remove post-rewrite and post-commit hooks from the current repository
-git prompt-log uninstall-hook
+git prompt-log deinit
 
 # Completely remove hooks, unset local git notes config, and delete local skill
-git prompt-log uninstall-hook --all
+git prompt-log deinit --all
 ```
+
+*(Note: `uninstall` is supported as an alias for `deinit`, and `install` is supported as an alias for `init`.)*
 
 To remove the CLI binary from your machine:
 

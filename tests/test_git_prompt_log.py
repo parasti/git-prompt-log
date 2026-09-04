@@ -399,26 +399,40 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         self.assertTrue((hooks_dir / "post-rewrite").exists())
         self.assertFalse((hooks_dir / "post-commit").exists())
 
-    def test_uninstall_hook_removes_both_hooks(self):
+    def test_deinit_removes_both_hooks(self):
         script_path = Path(gpn.__file__).resolve()
         subprocess.run(["python3", str(script_path), "init"], cwd=self.repo_dir, check=True, capture_output=True)
         hooks_dir = self.repo_dir / ".git" / "hooks"
         self.assertTrue((hooks_dir / "post-rewrite").exists())
         self.assertTrue((hooks_dir / "post-commit").exists())
 
-        res = subprocess.run(["python3", str(script_path), "uninstall-hook"], cwd=self.repo_dir, capture_output=True, text=True)
+        res = subprocess.run(["python3", str(script_path), "deinit"], cwd=self.repo_dir, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0)
         self.assertFalse((hooks_dir / "post-rewrite").exists())
         self.assertFalse((hooks_dir / "post-commit").exists())
 
-    def test_uninstall_hook_all(self):
+    def test_install_and_uninstall_aliases(self):
+        script_path = Path(gpn.__file__).resolve()
+        # Test install alias for init
+        subprocess.run(["python3", str(script_path), "install"], cwd=self.repo_dir, check=True, capture_output=True)
+        hooks_dir = self.repo_dir / ".git" / "hooks"
+        self.assertTrue((hooks_dir / "post-rewrite").exists())
+        self.assertTrue((hooks_dir / "post-commit").exists())
+
+        # Test uninstall alias for deinit
+        res = subprocess.run(["python3", str(script_path), "uninstall"], cwd=self.repo_dir, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertFalse((hooks_dir / "post-rewrite").exists())
+        self.assertFalse((hooks_dir / "post-commit").exists())
+
+    def test_deinit_all(self):
         script_path = Path(gpn.__file__).resolve()
         subprocess.run(["python3", str(script_path), "init", "--skill"], cwd=self.repo_dir, check=True, capture_output=True)
         hooks_dir = self.repo_dir / ".git" / "hooks"
         skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
         self.assertTrue(skill_file.exists())
 
-        res = subprocess.run(["python3", str(script_path), "uninstall-hook", "--all"], cwd=self.repo_dir, capture_output=True, text=True)
+        res = subprocess.run(["python3", str(script_path), "deinit", "--all"], cwd=self.repo_dir, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0)
         self.assertFalse((hooks_dir / "post-rewrite").exists())
         self.assertFalse((hooks_dir / "post-commit").exists())
@@ -428,7 +442,7 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         res_cfg = subprocess.run(["git", "config", "--local", "notes.rewriteRef"], cwd=self.repo_dir, capture_output=True)
         self.assertNotEqual(res_cfg.returncode, 0)
 
-    def test_uninstall_hook_preserves_other_commands(self):
+    def test_deinit_preserves_other_commands(self):
         hooks_dir = self.repo_dir / ".git" / "hooks"
         hooks_dir.mkdir(parents=True, exist_ok=True)
         post_commit = hooks_dir / "post-commit"
@@ -436,7 +450,7 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         post_commit.chmod(0o755)
 
         script_path = Path(gpn.__file__).resolve()
-        res = subprocess.run(["python3", str(script_path), "uninstall-hook", "--post-commit-only"], cwd=self.repo_dir, capture_output=True, text=True)
+        res = subprocess.run(["python3", str(script_path), "deinit", "--post-commit-only"], cwd=self.repo_dir, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0)
         self.assertTrue(post_commit.exists())
         content = post_commit.read_text()
@@ -1298,8 +1312,8 @@ class TestIngestionAdapters(unittest.TestCase):
         conf = subprocess.check_output(["git", "config", "prompt-log.harness"], cwd=repo_dir, text=True).strip()
         self.assertEqual(conf, "antigravity")
 
-        # Verify uninstall-hook --all clears it
-        subprocess.run(["python3", script_path, "uninstall-hook", "--all"], cwd=repo_dir, check=True, capture_output=True)
+        # Verify deinit --all clears it
+        subprocess.run(["python3", script_path, "deinit", "--all"], cwd=repo_dir, check=True, capture_output=True)
         res = subprocess.run(["git", "config", "prompt-log.harness"], cwd=repo_dir, capture_output=True)
         self.assertNotEqual(res.returncode, 0)
 

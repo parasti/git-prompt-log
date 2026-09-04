@@ -131,12 +131,12 @@ Prompt notes must never be pushed directly via `refs/notes/*`. Prompt notes are 
 1. Export on branch before PR: `git prompt-log export-log --commit`
 2. Land and re-hydrate on target branch: `git prompt-log import-log <path>`
 
-### Uninstall Hooks or Configuration
+### Deinitialize or Uninstall
 When asked to remove `git-prompt-log` from a repository:
 ```bash
-# Remove repository hooks only
-git prompt-log uninstall-hook
+# Remove repository hooks only (uninstall is supported as an alias)
+git prompt-log deinit
 
 # Completely remove hooks, unset local git notes config, and remove local skill
-git prompt-log uninstall-hook --all
+git prompt-log deinit --all
 ```
