@@ -113,11 +113,11 @@ git prompt-log edit HEAD
 ```
 
 ### Session Prompt Management (Exclusions & Retraction)
-When asked how to prevent, retract, or exclude specific prompts:
-* **Out-of-band session CLI (Recommended):** Never use prompt prefix tags (e.g. `[ignore]`, `[skip]`, `[retract]`) in chat messages, as they alter conversational context and can degrade LLM steering. Use `git prompt-log session` instead:
+When asked how to inspect, exclude, or retract specific prompts:
+* **Session CLI:** Use `git prompt-log session` to manage prompt inclusion per session:
   * `git prompt-log session`: List all prompts in the active session with 1-based index numbers.
   * `git prompt-log session drop <index_or_pattern>`: Mark prompt #N or matching pattern as excluded for this session (automatically updates HEAD's prompt note).
-  * `git prompt-log session undrop <index_or_pattern>`: Restore previously excluded prompt.
+  * `git prompt-log session undrop <index_or_pattern>`: Restore a previously excluded prompt.
   * `git prompt-log session clear`: Clear all exclusions for the session.
 * **Manual recording drop:** Run `git prompt-log record --drop "<pattern>"` (optionally targeting a specific commit with `--commit <SHA>`).
 * **Manual note edit:** Run `git prompt-log edit HEAD` (or `<SHA>`) to edit notes directly in `$EDITOR`.

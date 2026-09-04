@@ -2226,9 +2226,9 @@ git prompt-log import-log prompts/2026_09_04_feature.md
 
 ---
 
-## Accidental Prompts & Session Exclusions
+## Session Prompt Management & Exclusions
 
-To inspect, exclude, or retract prompts from an active session without modifying raw transcript files or injecting prefix tags into chat messages:
+To inspect, exclude, or restore prompts from an active assistant session:
 
 ```bash
 # List prompts in active session with 1-based index numbers

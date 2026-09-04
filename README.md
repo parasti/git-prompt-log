@@ -149,7 +149,7 @@ Assistant-Prompts:
 
 ## Session Prompt Management (Exclusions & Retraction)
 
-Rather than injecting prefix tags (such as `[ignore]` or `[skip]`) into chat messages—which pollutes conversational context and can degrade LLM steering—`git-prompt-log` manages prompt exclusions and retractions cleanly out-of-band via `git prompt-log session`:
+You can inspect, exclude, or restore individual prompts from an active assistant session using the `session` subcommand:
 
 ```bash
 # List prompts in the active session with 1-based index numbers
@@ -158,7 +158,7 @@ git prompt-log session
 # Mark a specific prompt turn (e.g. #2) as excluded from this session
 git prompt-log session drop 2
 
-# Or exclude prompts matching a specific pattern for this session
+# Exclude prompts matching a specific pattern for this session
 git prompt-log session drop "Commit"
 
 # Restore a previously excluded prompt
