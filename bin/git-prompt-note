@@ -728,11 +728,36 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+DEFAULT_SKILL_MD = """---
+name: agy-prompt-note
+description: Attaches AI session metadata and human steering prompts directly to git notes on commits.
+---
+
+# Git Prompt Note
+
+Attaches AI steering prompts and session metadata to Git notes on commits (`refs/notes/commits`).
+
+## Workflow
+
+After authoring commits, record the steering prompts:
+
+```bash
+git prompt-note record
+```
+
+To view the recorded note on a commit:
+
+```bash
+git prompt-note show HEAD
+```
+"""
+
+
 def _install_hook_file(hook_path: Path, hook_cmd: str, comment_title: str):
     """Safely creates or appends to a git hook file."""
     if hook_path.exists():
         existing = hook_path.read_text(encoding="utf-8")
-        if "git_prompt_note.py" in existing:
+        if "git prompt-note" in existing or "git_prompt_note.py" in existing:
             print(f"{hook_path.name} hook is already installed.")
             return
         with open(hook_path, "a", encoding="utf-8") as f:
@@ -755,25 +780,35 @@ def cmd_install_hook(args: argparse.Namespace) -> int:
     hooks_dir = common_git / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
-    script_path = Path(__file__).resolve()
-
     # 1. Install post-rewrite hook (safe automatic merger on squash / rebase / amend)
     post_rewrite_path = hooks_dir / "post-rewrite"
-    post_rewrite_cmd = f'python3 "{script_path}" post-rewrite --ref="{args.ref}"'
+    post_rewrite_cmd = f'git prompt-note post-rewrite --ref="{args.ref}"'
     _install_hook_file(post_rewrite_path, post_rewrite_cmd, "Git Prompt Note rebase/squash merger")
 
     # 2. Optionally install post-commit hook (strictly requires AGY_SESSION_ID / ANTIGRAVITY_CONVERSATION_ID)
     if getattr(args, "with_post_commit", False):
         post_commit_path = hooks_dir / "post-commit"
-        post_commit_cmd = f'python3 "{script_path}" post-commit --ref="{args.ref}"'
+        post_commit_cmd = f'git prompt-note post-commit --ref="{args.ref}"'
         _install_hook_file(post_commit_path, post_commit_cmd, "Git Prompt Note agent post-commit hook")
 
-    # 3. Set git config for notes rewriting
+    # 3. Set local git config for notes rewriting
     run_git(["config", "notes.rewrite.rebase", "true"], repo_root=repo_root)
     run_git(["config", "notes.rewrite.amend", "true"], repo_root=repo_root)
     run_git(["config", "notes.rewriteRef", args.ref], repo_root=repo_root)
-
     print(f"Git configured: notes.rewriteRef = {args.ref}")
+
+    # 4. If called via 'init' and with_skill is true, install local repository skill
+    if getattr(args, "with_skill", False):
+        skill_target = repo_root / ".agents" / "skills" / "agy-prompt-note" / "SKILL.md"
+        skill_target.parent.mkdir(parents=True, exist_ok=True)
+        local_skill_src = Path(__file__).resolve().parent.parent / "SKILL.md"
+        if local_skill_src.is_file():
+            content = local_skill_src.read_text(encoding="utf-8")
+        else:
+            content = DEFAULT_SKILL_MD
+        skill_target.write_text(content, encoding="utf-8")
+        print(f"Installed local agent skill at {skill_target.relative_to(repo_root)}")
+
     return 0
 
 
@@ -791,6 +826,25 @@ def main():
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # init
+    p_init = subparsers.add_parser(
+        "init",
+        help="Initialize git-prompt-note in current repository (hooks, config, skill)",
+        parents=[base_parser],
+    )
+    p_init.add_argument(
+        "--no-skill",
+        dest="with_skill",
+        action="store_false",
+        default=True,
+        help="Skip installing local .agents/skills/agy-prompt-note/SKILL.md",
+    )
+    p_init.add_argument(
+        "--with-post-commit",
+        action="store_true",
+        help="Also install post-commit hook (strictly active only when AGY_SESSION_ID is set)",
+    )
 
     # record
     p_record = subparsers.add_parser("record", help="Attach prompt note to a commit", parents=[base_parser])
@@ -826,7 +880,9 @@ def main():
 
     args = parser.parse_args()
 
-    if args.command == "record":
+    if args.command in ("init", "install-hook"):
+        sys.exit(cmd_install_hook(args))
+    elif args.command == "record":
         sys.exit(cmd_record(args))
     elif args.command == "post-commit":
         sys.exit(cmd_post_commit(args))
@@ -834,8 +890,6 @@ def main():
         sys.exit(cmd_post_rewrite(args))
     elif args.command == "show":
         sys.exit(cmd_show(args))
-    elif args.command == "install-hook":
-        sys.exit(cmd_install_hook(args))
     else:
         parser.print_help()
         sys.exit(1)

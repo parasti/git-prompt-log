@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# git-prompt-note one-command installer
-# Installs git-prompt-note into PATH and configures global Git notes rewriting.
+# git-prompt-note installer
+# Installs the CLI binary and prompts before applying global Git or agent configurations.
 
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR="${PREFIX}/bin"
 SKILL_DIR="${HOME}/.gemini/config/skills/agy-prompt-note"
 
-INSTALL_SKILL=true
-CONFIGURE_GIT=true
+GLOBAL_GIT=""
+GLOBAL_SKILL=""
 
 usage() {
     cat << 'HELP'
@@ -17,8 +17,9 @@ Usage: ./install.sh [options]
 
 Options:
   --prefix <dir>       Installation prefix (default: ~/.local)
-  --no-skill           Skip installing Antigravity global skill
-  --no-git-config      Skip configuring global Git notes rewrite settings
+  --global             Configure Git and install assistant skill globally without asking
+  --local-only         Install only the CLI binary; skip all global configurations
+  -y, --yes            Assume yes to all prompts
   -h, --help           Show this help message
 HELP
     exit 0
@@ -31,12 +32,19 @@ while [[ $# -gt 0 ]]; do
             BIN_DIR="${PREFIX}/bin"
             shift 2
             ;;
-        --no-skill)
-            INSTALL_SKILL=false
+        --global)
+            GLOBAL_GIT=true
+            GLOBAL_SKILL=true
             shift
             ;;
-        --no-git-config)
-            CONFIGURE_GIT=false
+        --local-only)
+            GLOBAL_GIT=false
+            GLOBAL_SKILL=false
+            shift
+            ;;
+        -y|--yes)
+            GLOBAL_GIT=true
+            GLOBAL_SKILL=true
             shift
             ;;
         -h|--help)
@@ -58,26 +66,68 @@ if [[ ! -f "${SOURCE_BIN}" ]]; then
     exit 1
 fi
 
-echo "==> Installing git-prompt-note..."
+echo "==> Installing git-prompt-note CLI..."
 
 # 1. Install CLI binary
 mkdir -p "${BIN_DIR}"
 install -m 755 "${SOURCE_BIN}" "${BIN_DIR}/git-prompt-note"
 echo "  [+] Installed executable: ${BIN_DIR}/git-prompt-note"
 
-# 2. Configure Git global settings for notes rewriting
-if [[ "${CONFIGURE_GIT}" = true ]]; then
+# Helper for interactive prompt
+prompt_yes_no() {
+    local prompt_msg="$1"
+    local default_ans="$2" # 'y' or 'n'
+
+    # Non-interactive environment fallback to default
+    if [[ ! -t 0 ]]; then
+        [[ "$default_ans" == "y" ]] && return 0 || return 1
+    fi
+
+    local ans
+    read -r -p "${prompt_msg} " ans || true
+    ans="$(echo "${ans}" | tr '[:upper:]' '[:lower:]')"
+    if [[ -z "${ans}" ]]; then
+        ans="${default_ans}"
+    fi
+    [[ "${ans}" == "y" || "${ans}" == "yes" ]]
+}
+
+echo ""
+echo "Configuration:"
+
+# 2. Global Git config
+if [[ -z "${GLOBAL_GIT}" ]]; then
+    if prompt_yes_no "Configure Git globally to rewrite notes on rebase/amend? [y/N]" "n"; then
+        GLOBAL_GIT=true
+    else
+        GLOBAL_GIT=false
+    fi
+fi
+
+if [[ "${GLOBAL_GIT}" = true ]]; then
     git config --global notes.rewrite.rebase true
     git config --global notes.rewrite.amend true
     git config --global notes.rewriteRef refs/notes/commits
-    echo "  [+] Configured Git global notes.rewriteRef = refs/notes/commits"
+    echo "  [+] Configured Git global: notes.rewriteRef = refs/notes/commits"
+else
+    echo "  [-] Skipped global Git config"
 fi
 
-# 3. Install Antigravity global skill
-if [[ "${INSTALL_SKILL}" = true && -f "${SOURCE_SKILL}" ]]; then
+# 3. Global Antigravity skill
+if [[ -z "${GLOBAL_SKILL}" ]]; then
+    if prompt_yes_no "Install Antigravity assistant skill globally (~/.gemini/config/skills)? [y/N]" "n"; then
+        GLOBAL_SKILL=true
+    else
+        GLOBAL_SKILL=false
+    fi
+fi
+
+if [[ "${GLOBAL_SKILL}" = true && -f "${SOURCE_SKILL}" ]]; then
     mkdir -p "${SKILL_DIR}"
     cp "${SOURCE_SKILL}" "${SKILL_DIR}/SKILL.md"
-    echo "  [+] Installed Antigravity skill: ${SKILL_DIR}/SKILL.md"
+    echo "  [+] Installed global skill: ${SKILL_DIR}/SKILL.md"
+else
+    echo "  [-] Skipped global skill installation"
 fi
 
 # 4. Check PATH
@@ -93,5 +143,10 @@ case ":$PATH:" in
 esac
 
 echo ""
-echo "Installation complete!"
-echo "Run 'git prompt-note --help' or 'git prompt-note install-hook' inside a repo."
+echo "==> Installation complete!"
+if [[ "${GLOBAL_GIT}" = false || "${GLOBAL_SKILL}" = false ]]; then
+    echo ""
+    echo "To enable git-prompt-note for a specific repository, run:"
+    echo "  cd /path/to/my-repo"
+    echo "  git prompt-note init"
+fi

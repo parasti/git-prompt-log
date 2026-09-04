@@ -285,6 +285,34 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         # Should not attach any note to human commit
         self.assertIsNone(gpn.get_note_content(sha, repo_root=self.repo_dir))
 
+    def test_init_installs_hook_config_and_skill(self):
+        script_path = Path(gpn.__file__).resolve()
+        res = subprocess.run(
+            ["python3", str(script_path), "init"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+
+        # 1. Hook installed
+        hooks_dir = self.repo_dir / ".git" / "hooks"
+        self.assertTrue((hooks_dir / "post-rewrite").exists())
+        self.assertTrue(os.access(hooks_dir / "post-rewrite", os.X_OK))
+
+        # 2. Local git config set
+        cfg_res = subprocess.check_output(
+            ["git", "config", "--local", "notes.rewriteRef"],
+            cwd=self.repo_dir,
+            text=True,
+        ).strip()
+        self.assertEqual(cfg_res, "refs/notes/commits")
+
+        # 3. Local skill installed
+        skill_file = self.repo_dir / ".agents" / "skills" / "agy-prompt-note" / "SKILL.md"
+        self.assertTrue(skill_file.exists())
+        self.assertIn("agy-prompt-note", skill_file.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

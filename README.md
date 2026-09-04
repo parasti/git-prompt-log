@@ -26,26 +26,35 @@ cd git-prompt-note
 ./install.sh
 ```
 
-`./install.sh` performs:
-1. Installs the `git-prompt-note` executable into `~/.local/bin/`.
-2. Configures global Git settings so rewrites preserve notes (`notes.rewrite.rebase = true`, `notes.rewriteRef = refs/notes/commits`).
-3. Installs the Antigravity global skill to `~/.gemini/config/skills/agy-prompt-note/SKILL.md`.
+`./install.sh` installs the `git-prompt-note` binary into `~/.local/bin/` and prompts before making any global system changes:
+- Asks whether to configure Git globally for notes rewriting (defaults to No).
+- Asks whether to install the Antigravity assistant skill globally (defaults to No).
+
+Non-interactive flags:
+- `./install.sh --local-only`: Installs only the CLI binary without touching global configs.
+- `./install.sh --global`: Opts into both global Git configuration and global assistant skill.
 
 ---
 
-## Quickstart in a Repository
+## Quickstart: Enable in Any Repository
 
-### 1. Enable in a Repository
-Run once inside your repository:
+To enable prompt notes for a specific repository without global configuration, run:
 
 ```bash
 cd my-project
-git prompt-note install-hook
+git prompt-note init
 ```
 
-This installs `.git/hooks/post-rewrite` so Git automatically invokes note reconciliation whenever you run `git rebase -i` or squash commits.
+This single command:
+1. Installs `.git/hooks/post-rewrite` so Git automatically invokes note reconciliation on rebase/squash.
+2. Configures repository-scoped Git notes rewriting (`notes.rewrite.rebase = true`, `notes.rewriteRef = refs/notes/commits`).
+3. Installs the repository-local assistant skill at `.agents/skills/agy-prompt-note/SKILL.md`.
 
-### 2. Instruct the Assistant
+---
+
+## Daily Workflow
+
+### 1. Instruct the Assistant
 Add a prompt attribution guideline to `AGENTS.md` in your repository:
 
 ```markdown
