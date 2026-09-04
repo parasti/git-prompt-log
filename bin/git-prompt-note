@@ -921,7 +921,7 @@ def pipe_to_pager(text: str, repo_root: Optional[Path] = None):
 def cmd_log(args: argparse.Namespace) -> int:
     """Displays commits in range with their active steering prompts."""
     repo_root = get_repo_root()
-    commit_range = getattr(args, "range", None) or get_default_branch_range(repo_root)
+    commit_range = getattr(args, "range", None) or "HEAD"
     git_cmd = ["log", "--format=%H %s"]
     if getattr(args, "max_count", None):
         git_cmd.extend(["-n", str(args.max_count)])
