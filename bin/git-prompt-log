@@ -1036,156 +1036,6 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
         return None
 
 
-class AiderAdapter(BaseIngestionAdapter):
-    name = "aider"
-    display_name = "Aider"
-
-    def is_active(self, repo_root: Optional[Path] = None) -> bool:
-        if os.environ.get("AIDER_SESSION_ID"):
-            return True
-        repo = repo_root or get_repo_root()
-        if (repo / ".aider.chat.history.md").exists() or (repo / ".aider.input.history").exists():
-            return True
-        return False
-
-    def detect_session_id(self, repo_root: Optional[Path] = None) -> Optional[str]:
-        return os.environ.get("AIDER_SESSION_ID")
-
-    def get_agent_identity(self, detected_model: Optional[str] = None) -> Tuple[str, str]:
-        harness = "Aider"
-        try:
-            out = subprocess.check_output(["aider", "--version"], text=True, stderr=subprocess.DEVNULL).strip()
-            if out:
-                harness = f"Aider {out}"
-        except Exception:
-            pass
-        return harness, detected_model or "Claude 3.7 Sonnet"
-
-    def parse_chat_history(
-        self,
-        history_path: Path,
-        custom_patterns: Optional[List[str]] = None,
-        apply_session_excludes: bool = True,
-        repo_root: Optional[Path] = None,
-    ) -> Optional[Dict[str, Any]]:
-        if not history_path.exists():
-            return None
-
-        try:
-            content = history_path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            return None
-
-        lines = content.splitlines()
-        detected_model = None
-        raw_turns: List[Tuple[str, str]] = []
-        current_ts = datetime.datetime.fromtimestamp(
-            history_path.stat().st_mtime, tz=datetime.timezone.utc
-        ).strftime("%Y-%m-%d %H:%M:%S UTC")
-        sid = f"aider-{history_path.parent.name}"
-
-        in_user_prompt = False
-        current_prompt_lines: List[str] = []
-
-        def flush_user_prompt():
-            nonlocal in_user_prompt, current_prompt_lines
-            if in_user_prompt and current_prompt_lines:
-                text = "\n".join(current_prompt_lines).strip()
-                if text:
-                    raw_turns.append((current_ts, text))
-            in_user_prompt = False
-            current_prompt_lines = []
-
-        chat_start_re = re.compile(r"^#\s*aider chat started at\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})", re.IGNORECASE)
-        model_re = re.compile(r"(?:/model|Model:)\s*([a-zA-Z0-9\.\-_/]+)", re.IGNORECASE)
-
-        for line in lines:
-            m_start = chat_start_re.match(line)
-            if m_start:
-                flush_user_prompt()
-                dt_raw = m_start.group(1).strip()
-                current_ts = format_utc(dt_raw)
-                sid = f"aider-{dt_raw.replace(' ', '-').replace(':', '')}"
-                continue
-
-            m_mod = model_re.search(line)
-            if m_mod:
-                detected_model = m_mod.group(1).strip()
-
-            if line.startswith("#### "):
-                flush_user_prompt()
-                in_user_prompt = True
-                prompt_line = line[5:].strip()
-                current_prompt_lines = [prompt_line] if prompt_line else []
-            elif in_user_prompt:
-                if not line.strip():
-                    flush_user_prompt()
-                elif line.startswith("# ") or line.startswith("## ") or line.startswith("### ") or line.startswith("> "):
-                    flush_user_prompt()
-                else:
-                    current_prompt_lines.append(line)
-
-        flush_user_prompt()
-
-        if not raw_turns:
-            input_history = history_path.parent / ".aider.input.history"
-            if input_history.exists():
-                try:
-                    for iline in input_history.read_text(encoding="utf-8", errors="replace").splitlines():
-                        iline = iline.strip()
-                        if iline and not iline.startswith("/"):
-                            raw_turns.append((current_ts, iline))
-                except Exception:
-                    pass
-
-        if not raw_turns:
-            return None
-
-        prompts = process_prompt_turns(raw_turns, custom_patterns=custom_patterns)
-        if apply_session_excludes:
-            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
-
-        harness, model = self.get_agent_identity(detected_model)
-        return {
-            "session_id": sid,
-            "detected_model": detected_model,
-            "harness": harness,
-            "prompts": prompts,
-        }
-
-    def find_session_data(
-        self,
-        session_id: Optional[str] = None,
-        repo_root: Optional[Path] = None,
-        max_age_seconds: Optional[int] = None,
-        custom_patterns: Optional[List[str]] = None,
-        apply_session_excludes: bool = True,
-        extra_options: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
-        repo = repo_root or get_repo_root()
-        if custom_patterns is None:
-            custom_patterns = get_configured_exclude_patterns(repo_root=repo)
-
-        candidates = [
-            repo / ".aider.chat.history.md",
-            repo / ".aider.input.history",
-            Path(os.path.expanduser("~/.aider.chat.history.md")),
-        ]
-        for c in candidates:
-            if c.exists():
-                data = self.parse_chat_history(
-                    c,
-                    custom_patterns=custom_patterns,
-                    apply_session_excludes=apply_session_excludes,
-                    repo_root=repo,
-                )
-                if data and data.get("prompts"):
-                    if session_id:
-                        data["session_id"] = session_id
-                    return data
-        return None
-
-
 class DirectAdapter(BaseIngestionAdapter):
     name = "direct"
     display_name = "Direct / Manual Entry"
@@ -1336,7 +1186,6 @@ class AdapterRegistry:
 REGISTRY = AdapterRegistry()
 REGISTRY.register(AntigravityAdapter())
 REGISTRY.register(ClaudeCodeAdapter())
-REGISTRY.register(AiderAdapter())
 REGISTRY.register(DirectAdapter())
 
 
@@ -2718,9 +2567,9 @@ def main():
     p_record.add_argument(
         "--adapter",
         "-a",
-        choices=["auto", "antigravity", "claude", "aider", "direct"],
+        choices=["auto", "antigravity", "claude", "direct"],
         default="auto",
-        help="Ingestion adapter (auto, antigravity, claude, aider, direct)",
+        help="Ingestion adapter (auto, antigravity, claude, direct)",
     )
     p_record.add_argument("--message", "-m", help="Directly record prompt text without transcript")
     p_record.add_argument("--stdin", action="store_true", help="Read direct prompt text from standard input")

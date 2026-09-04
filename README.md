@@ -202,7 +202,6 @@ Prompts can also be filtered or modified retroactively via the CLI:
 | :--- | :--- | :--- |
 | `antigravity` | Google Antigravity CLI | `$AGY_SESSION_ID`, `$ANTIGRAVITY_CONVERSATION_ID`, `brain/` |
 | `claude` | Claude Code | `$CLAUDE_SESSION_ID`, `~/.claude/projects/`, `$CLAUDE_TRANSCRIPT_PATH` |
-| `aider` | Aider | `$AIDER_SESSION_ID`, `.aider.chat.history.md`, `.aider.input.history` |
 | `direct` | Human / Manual Entry | `-m / --message "..."` or `--stdin` |
 
 ### Inspecting Adapters

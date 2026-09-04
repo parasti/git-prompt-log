@@ -1197,12 +1197,10 @@ class TestIngestionAdapters(unittest.TestCase):
         names = [a.name for a in adapters]
         self.assertIn("antigravity", names)
         self.assertIn("claude", names)
-        self.assertIn("aider", names)
         self.assertIn("direct", names)
 
         self.assertIsInstance(gpn.REGISTRY.get("antigravity"), gpn.AntigravityAdapter)
         self.assertIsInstance(gpn.REGISTRY.get("claude"), gpn.ClaudeCodeAdapter)
-        self.assertIsInstance(gpn.REGISTRY.get("aider"), gpn.AiderAdapter)
         self.assertIsInstance(gpn.REGISTRY.get("direct"), gpn.DirectAdapter)
 
     def test_claude_adapter_parsing_jsonl(self):
@@ -1238,29 +1236,6 @@ class TestIngestionAdapters(unittest.TestCase):
         prompts = [p.text for p in parsed["prompts"]]
         self.assertEqual(prompts, ["First user message", "Second user message"])
 
-    def test_aider_adapter_parsing(self):
-        history = self.work_dir / ".aider.chat.history.md"
-        content = """# aider chat started at 2026-09-04 14:00:00
-
-> /model gpt-4o
-
-#### Implement caching layer
-
-Let's implement the cache.
-
-#### [ignore] wrong window
-
-#### Write integration tests for caching
-"""
-        history.write_text(content, encoding="utf-8")
-
-        adapter = gpn.AiderAdapter()
-        parsed = adapter.parse_chat_history(history)
-        self.assertIsNotNone(parsed)
-        self.assertEqual(parsed["detected_model"], "gpt-4o")
-        prompts = [p.text for p in parsed["prompts"]]
-        self.assertEqual(prompts, ["Implement caching layer", "Write integration tests for caching"])
-
     def test_direct_adapter_manual_recording(self):
         adapter = gpn.DirectAdapter()
         parsed = adapter.find_session_data(
@@ -1295,7 +1270,6 @@ Let's implement the cache.
         adapter_names = [a["name"] for a in data["adapters"]]
         self.assertIn("direct", adapter_names)
         self.assertIn("claude", adapter_names)
-        self.assertIn("aider", adapter_names)
 
         # 2. Record direct prompt with -m and custom harness/model
         cmd_rec = [
