@@ -2527,7 +2527,7 @@ def main():
         parents=[base_parser],
     )
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
     # init
     p_init = subparsers.add_parser(
@@ -2624,7 +2624,7 @@ def main():
     p_show.add_argument("--incremental", "-i", action="store_true", help="Display only incremental prompts since parent commit")
 
     # log
-    p_log = subparsers.add_parser("log", help="Display commits with their steering prompts", parents=[base_parser])
+    p_log = subparsers.add_parser("log", help="Display commits with their steering prompts (default)", parents=[base_parser])
     p_log.add_argument("range", nargs="?", help="Commit range (default: detected branch range)")
     p_log.add_argument("-n", "--max-count", type=int, dest="max_count", help="Limit number of commits to display")
     p_log.add_argument("--full", action="store_true", help="Display full cumulative prompts instead of active prompt")
@@ -2699,7 +2699,7 @@ def main():
         sys.exit(cmd_post_rewrite(args))
     elif args.command == "show":
         sys.exit(cmd_show(args))
-    elif args.command == "log":
+    elif args.command in ("log", None):
         sys.exit(cmd_log(args))
     elif args.command == "export-log":
         sys.exit(cmd_export_log(args))

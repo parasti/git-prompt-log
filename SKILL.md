@@ -48,7 +48,7 @@ git prompt-log show HEAD
 git log -n 1
 
 # View commit history annotated with active steering prompts
-git prompt-log log
+git prompt-log
 ```
 
 ### Export Prompt Notes for Pull Requests

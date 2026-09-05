@@ -30,7 +30,7 @@ git prompt-log init
 git prompt-log import-log prompts/git-prompt-log.md
 
 # 3. View the commit history with prompt timelines in rich color:
-git prompt-log log
+git prompt-log
 ```
 
 You can view the causal prompt on each commit, or pass `--full` to view the cumulative prompt history:
@@ -61,7 +61,7 @@ In practice, **you will almost never run `record` yourself**. Once enabled in a 
 3. **Inspect anytime:**
    ```bash
    # View recent commits and their active steering prompts:
-   git prompt-log log
+   git prompt-log
 
    # Standard git log also includes prompt notes:
    git log -n 1

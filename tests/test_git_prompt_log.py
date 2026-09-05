@@ -1357,6 +1357,76 @@ class TestIngestionAdapters(unittest.TestCase):
         res = subprocess.run(["git", "config", "prompt-log.harness"], cwd=repo_dir, capture_output=True)
         self.assertNotEqual(res.returncode, 0)
 
+    def test_plain_invocation_defaults_to_log(self):
+        repo_dir = self.work_dir / "repo_plain_log"
+        repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+
+        f = repo_dir / "hello.txt"
+        f.write_text("hello world")
+        subprocess.run(["git", "add", "hello.txt"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: initial commit"], cwd=repo_dir, check=True)
+
+        script_path = str(bin_path)
+
+        # Attach a prompt note
+        cmd_rec = [
+            "python3",
+            script_path,
+            "record",
+            "-m",
+            "Initial prompt steering",
+            "-c",
+            "HEAD",
+        ]
+        subprocess.run(cmd_rec, cwd=repo_dir, check=True, capture_output=True)
+
+        # 1. Run plain git-prompt-log
+        res_plain = subprocess.run(
+            ["python3", script_path, "--no-pager"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        # 2. Run explicit git-prompt-log log
+        res_log = subprocess.run(
+            ["python3", script_path, "log", "--no-pager"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        # Plain git-prompt-log must match git-prompt-log log output exactly
+        self.assertEqual(res_plain.returncode, 0)
+        self.assertEqual(res_log.returncode, 0)
+        self.assertEqual(res_plain.stdout, res_log.stdout)
+        self.assertIn("feat: initial commit", res_plain.stdout)
+        self.assertIn("Initial prompt steering", res_plain.stdout)
+
+        # 3. Verify --help still shows top-level help with default indication
+        res_help = subprocess.run(
+            ["python3", script_path, "--help"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("Display commits with their steering prompts (default)", res_help.stdout)
+
+        # 4. Verify invalid command still produces error
+        res_invalid = subprocess.run(
+            ["python3", script_path, "unknown-cmd"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_invalid.returncode, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
