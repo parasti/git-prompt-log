@@ -35,8 +35,8 @@ When asked to initialize or enable prompt notes:
 git prompt-log init
 ```
 *Options to mention or use if requested:*
-* `--skill`: Installs local repository assistant skill at `.agents/skills/git-prompt-log/SKILL.md` (default: no skill).
 * `--no-post-commit`: Skips installing the automatic post-commit hook.
+* `-H, --harness <name>`: Explicitly configure default assistant harness (`antigravity`, `claude`, `manual`).
 
 ### Inspect Notes
 When asked to view or check prompt notes:

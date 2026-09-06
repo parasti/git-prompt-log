@@ -291,20 +291,6 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
         self.assertFalse(skill_file.exists())
 
-    def test_init_subcommand_with_skill(self):
-        script_path = Path(gpn.__file__).resolve()
-        res = subprocess.run(
-            ["python3", str(script_path), "init", "--skill"],
-            cwd=self.repo_dir,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(res.returncode, 0)
-
-        skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
-        self.assertTrue(skill_file.exists())
-        self.assertIn("git-prompt-log", skill_file.read_text(encoding="utf-8"))
-
     def test_init_migrates_legacy_hooks(self):
         hooks_dir = self.repo_dir / ".git" / "hooks"
         hooks_dir.mkdir(parents=True, exist_ok=True)
@@ -371,20 +357,6 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
         skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
         self.assertFalse(skill_file.exists())
 
-    def test_init_installs_skill_with_flag(self):
-        script_path = Path(gpn.__file__).resolve()
-        res = subprocess.run(
-            ["python3", str(script_path), "init", "--skill"],
-            cwd=self.repo_dir,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(res.returncode, 0)
-
-        skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
-        self.assertTrue(skill_file.exists())
-        self.assertIn("git-prompt-log", skill_file.read_text(encoding="utf-8"))
-
     def test_init_no_post_commit(self):
         script_path = Path(gpn.__file__).resolve()
         res = subprocess.run(
@@ -427,9 +399,11 @@ class TestGitPostRewriteIntegration(unittest.TestCase):
 
     def test_deinit_all(self):
         script_path = Path(gpn.__file__).resolve()
-        subprocess.run(["python3", str(script_path), "init", "--skill"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["python3", str(script_path), "init"], cwd=self.repo_dir, check=True, capture_output=True)
         hooks_dir = self.repo_dir / ".git" / "hooks"
         skill_file = self.repo_dir / ".agents" / "skills" / "git-prompt-log" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True, exist_ok=True)
+        skill_file.write_text("test skill", encoding="utf-8")
         self.assertTrue(skill_file.exists())
 
         res = subprocess.run(["python3", str(script_path), "deinit", "--all"], cwd=self.repo_dir, capture_output=True, text=True)

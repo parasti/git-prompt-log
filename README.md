@@ -113,8 +113,6 @@ This single command:
 2. Installs `.git/hooks/post-rewrite` so Git automatically reconciles notes on rebase/squash.
 3. Configures repository-scoped Git notes rewriting (`notes.rewrite.rebase = true`, `notes.rewriteRef = refs/notes/commits`).
 
-*(Optional: pass `--skill` to also install the repository assistant skill at `.agents/skills/git-prompt-log/SKILL.md`).*
-
 ---
 
 ## Note Schema
