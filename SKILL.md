@@ -66,8 +66,15 @@ git prompt-log import prompts/YYYY_MM_DD_HHMMSS_<slug>.md
 
 # Multiple files (e.g. via shell glob)
 git prompt-log import prompts/*.md
+
+# Preview imports without writing notes
+git prompt-log import --dry-run prompts/*.md
+
+# Import from stdin
+git prompt-log import --stdin < prompts/log.md
+cat prompts/log.md | git prompt-log import -
 ```
-This matches landed commits by commit hash or commit subject and attaches the prompt provenance back to `refs/notes/commits`. Note: directory paths are rejected; pass files directly (e.g. `prompts/*.md`).
+This matches landed commits by commit hash or commit subject and attaches the prompt provenance back to `refs/notes/commits`. Note: directory paths are rejected; pass files directly (e.g. `prompts/*.md`). Zero arguments will do nothing and require specifying files or stdin.
 
 ### Manual Recording & Filtering
 If the user asks to record prompts manually (e.g. after committing changes themselves rather than having the assistant commit) or filter out specific turns:

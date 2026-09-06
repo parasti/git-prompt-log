@@ -91,6 +91,13 @@ Git notes are not pushed or fetched by default during standard `git push` or Git
 
    # Re-hydrate multiple logs (e.g. via shell glob):
    git prompt-log import prompts/*.md
+
+   # Preview imports without modifying git notes:
+   git prompt-log import --dry-run prompts/*.md
+
+   # Import from standard input (--stdin or '-'):
+   git prompt-log export --stdout | git prompt-log import --stdin
+   cat prompt-log.md | git prompt-log import -
    ```
    The tool matches commits by commit subject or hash and re-attaches prompt provenance into `refs/notes/commits`.
 

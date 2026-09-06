@@ -673,6 +673,95 @@ class TestExportAndImportLog(unittest.TestCase):
         self.assertNotEqual(res_folder.returncode, 0)
         self.assertIn("Folder import is not supported; pass files directly", res_folder.stderr)
 
+    def test_import_stdin_and_dry_run(self):
+        self._commit("base.txt", "base", "chore: base")
+        sha = self._commit("file_stdin.txt", "content", "feat: Stdin commit")
+        note = gpn.SessionNote(
+            session_id="sess-stdin",
+            harness="Antigravity CLI 1.1.27",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:00:00 UTC",
+            prompts=[gpn.PromptEntry("2026-09-04 00:59:00", "Stdin prompt")],
+        )
+        gpn.write_note_content(sha, note.format(), repo_root=self.repo_dir)
+
+        script_path = Path(gpn.__file__).resolve()
+        log_file = self.repo_dir / "stdin_export.md"
+        subprocess.run(
+            ["python3", str(script_path), "export", "--output", str(log_file), "--range", f"{sha}~1..{sha}"],
+            cwd=self.repo_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Remove note
+        subprocess.run(["git", "notes", "remove", sha], cwd=self.repo_dir, check=True, capture_output=True)
+        self.assertIsNone(gpn.get_note_content(sha, repo_root=self.repo_dir))
+
+        log_content = log_file.read_text(encoding="utf-8")
+
+        # 1. Test --dry-run with file: note must NOT be written
+        res_dry = subprocess.run(
+            ["python3", str(script_path), "import", "--dry-run", str(log_file)],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_dry.returncode, 0)
+        self.assertIn("[dry-run] Would import prompt note for", res_dry.stdout)
+        self.assertIsNone(gpn.get_note_content(sha, repo_root=self.repo_dir))
+
+        # 2. Test --dry-run with --stdin: note must NOT be written
+        res_dry_stdin = subprocess.run(
+            ["python3", str(script_path), "import", "--stdin", "--dry-run"],
+            input=log_content,
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_dry_stdin.returncode, 0)
+        self.assertIn("[dry-run] Would import prompt note for", res_dry_stdin.stdout)
+        self.assertIsNone(gpn.get_note_content(sha, repo_root=self.repo_dir))
+
+        # 3. Test positional '-' for stdin: note IS written
+        res_pos_stdin = subprocess.run(
+            ["python3", str(script_path), "import", "-"],
+            input=log_content,
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_pos_stdin.returncode, 0)
+        self.assertIn("Imported prompt note for", res_pos_stdin.stdout)
+        self.assertIsNotNone(gpn.get_note_content(sha, repo_root=self.repo_dir))
+
+        # Remove note again
+        subprocess.run(["git", "notes", "remove", sha], cwd=self.repo_dir, check=True, capture_output=True)
+        self.assertIsNone(gpn.get_note_content(sha, repo_root=self.repo_dir))
+
+        # 4. Test --stdin flag: note IS written
+        res_flag_stdin = subprocess.run(
+            ["python3", str(script_path), "import", "--stdin"],
+            input=log_content,
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_flag_stdin.returncode, 0)
+        self.assertIn("Imported prompt note for", res_flag_stdin.stdout)
+        self.assertIsNotNone(gpn.get_note_content(sha, repo_root=self.repo_dir))
+
+    def test_import_zero_args_does_nothing(self):
+        script_path = Path(gpn.__file__).resolve()
+        res = subprocess.run(
+            ["python3", str(script_path), "import"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("Error: No file specified.", res.stderr)
+
     def test_export_multiple_sessions_header_paragraph_breaks(self):
         self._commit("base.txt", "base", "chore: initial base")
         sha1 = self._commit("file_s1.txt", "s1", "feat: Session 1 commit")
