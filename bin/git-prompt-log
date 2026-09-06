@@ -1977,7 +1977,7 @@ def cmd_export_log(args: argparse.Namespace) -> int:
     lines = []
     lines.append(f"# Prompt Log Export {ts_human}")
     lines.append("")
-    lines.append(f"- **Tool:** [git-prompt-log]({TOOL_GITHUB_URL})")
+    lines.append(f"- **Generator:** [git-prompt-log]({TOOL_GITHUB_URL})")
     lines.append(f"- **Export command:** `{export_cmd}`")
     lines.append(f"- **Import command:** `{import_cmd}`")
     for s in merged_sessions:
