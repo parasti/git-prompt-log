@@ -1991,10 +1991,11 @@ def cmd_export_log(args: argparse.Namespace) -> int:
     for c in commit_entries:
         lines.append(f"- `{c['hash'][:8]}` {c['subject']}")
     lines.append("")
-    # Map causal prompt (session_id, timestamp, text) -> list of landed commit hashes
-    prompt_to_commits: Dict[Tuple[str, str, str], List[str]] = defaultdict(list)
+    # Map causal prompt (session_id, timestamp, text) -> list of landed commit dicts (hash, subject)
+    prompt_to_commits: Dict[Tuple[str, str, str], List[Dict[str, str]]] = defaultdict(list)
     for c in commit_entries:
         c_hash = c["hash"]
+        c_subj = c["subject"]
         candidates = []
         for sn in c["notes"]:
             for p in sn.prompts:
@@ -2005,8 +2006,8 @@ def cmd_export_log(args: argparse.Namespace) -> int:
                 key=lambda item: parse_timestamp_sort_key(item[1].timestamp),
             )
             key = (causal_sid, causal_p.timestamp, causal_p.text.strip())
-            if c_hash not in prompt_to_commits[key]:
-                prompt_to_commits[key].append(c_hash)
+            if not any(entry["hash"] == c_hash for entry in prompt_to_commits[key]):
+                prompt_to_commits[key].append({"hash": c_hash, "subject": c_subj})
 
     lines.append("## Steering Prompts")
     lines.append("")
@@ -2023,10 +2024,11 @@ def cmd_export_log(args: argparse.Namespace) -> int:
             lines.append(f"> {p.text.replace(chr(10), chr(10) + '> ')}")
             lines.append("")
             key = (s.session_id, p.timestamp, p.text.strip())
-            landed_shas = prompt_to_commits.get(key, [])
-            if landed_shas:
-                for l_sha in landed_shas:
-                    lines.append(f"Commit {l_sha[:8]} created.")
+            landed_commits = prompt_to_commits.get(key, [])
+            if landed_commits:
+                lines.append("Commits created:")
+                for lc in landed_commits:
+                    lines.append(f"- `{lc['hash'][:8]}` {lc['subject']}")
                 lines.append("")
 
     # Machine-readable envelope for lossless import

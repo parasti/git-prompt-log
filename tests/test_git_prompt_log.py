@@ -554,11 +554,11 @@ class TestExportAndImportLog(unittest.TestCase):
         out = res.stdout
 
         # Verify indicator appears after p1
-        self.assertIn(f"> First prompt that created commit 1\n\nCommit {sha1[:8]} created.", out)
+        self.assertIn(f"> First prompt that created commit 1\n\nCommits created:\n- `{sha1[:8]}` feat: first commit", out)
         # Verify p2 has NO indicator
         self.assertIn("> Second prompt that made no commit\n\n#### [2026-09-04 01:10:00 UTC]", out)
         # Verify indicator appears after p3
-        self.assertIn(f"> Third prompt that created commit 2\n\nCommit {sha2[:8]} created.", out)
+        self.assertIn(f"> Third prompt that created commit 2\n\nCommits created:\n- `{sha2[:8]}` feat: second commit", out)
 
     def test_import_legacy_metadata_format(self):
         sha = self._commit("file_legacy.txt", "legacy", "feat: Legacy Feature")
