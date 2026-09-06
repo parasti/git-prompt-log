@@ -516,6 +516,50 @@ class TestExportAndImportLog(unittest.TestCase):
         self.assertEqual(notes[0].session_id, "session-export-1")
         self.assertEqual(notes[0].prompts[0].text, "Build feature one")
 
+    def test_export_commit_landed_indicator(self):
+        self._commit("base.txt", "base", "chore: base")
+        sha1 = self._commit("file1.txt", "v1", "feat: first commit")
+        # Commit 1 has Prompt 1
+        p1 = gpn.PromptEntry("2026-09-04 01:00:00 UTC", "First prompt that created commit 1")
+        note1 = gpn.SessionNote(
+            session_id="session-indicator-1",
+            harness="Antigravity CLI 1.1.27",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:00:05 UTC",
+            prompts=[p1],
+        )
+        gpn.write_note_content(sha1, note1.format(), repo_root=self.repo_dir)
+
+        sha2 = self._commit("file2.txt", "v2", "feat: second commit")
+        # Commit 2 has cumulative prompts: Prompt 3, Prompt 2 (no commit), Prompt 1
+        p2 = gpn.PromptEntry("2026-09-04 01:05:00 UTC", "Second prompt that made no commit")
+        p3 = gpn.PromptEntry("2026-09-04 01:10:00 UTC", "Third prompt that created commit 2")
+        note2 = gpn.SessionNote(
+            session_id="session-indicator-1",
+            harness="Antigravity CLI 1.1.27",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:10:05 UTC",
+            prompts=[p3, p2, p1],
+        )
+        gpn.write_note_content(sha2, note2.format(), repo_root=self.repo_dir)
+
+        script_path = Path(gpn.__file__).resolve()
+        res = subprocess.run(
+            ["python3", str(script_path), "export", "--stdout", "--range", f"{sha1}~1..{sha2}"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+        out = res.stdout
+
+        # Verify indicator appears after p1
+        self.assertIn(f"> First prompt that created commit 1\n\nCommit {sha1[:8]} created.", out)
+        # Verify p2 has NO indicator
+        self.assertIn("> Second prompt that made no commit\n\n#### [2026-09-04 01:10:00 UTC]", out)
+        # Verify indicator appears after p3
+        self.assertIn(f"> Third prompt that created commit 2\n\nCommit {sha2[:8]} created.", out)
+
     def test_import_legacy_metadata_format(self):
         sha = self._commit("file_legacy.txt", "legacy", "feat: Legacy Feature")
         # Legacy log format with <!-- git-prompt-note:metadata
