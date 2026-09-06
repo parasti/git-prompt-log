@@ -460,6 +460,78 @@ def clean_user_prompt(content: str) -> str:
     return text.strip()
 
 
+INTERACTIVE_TOOL_NAMES = {
+    "ask_question",
+    "ask_user",
+    "request_user_input",
+    "AskFollowupQuestion",
+    "AskUserQuestion",
+}
+
+
+def get_interactive_tool_names(repo_root: Optional[Path] = None) -> Set[str]:
+    """Returns set of known interactive tool names that solicit human input."""
+    tools = set(INTERACTIVE_TOOL_NAMES)
+    code, out, _ = run_git(["config", "--get-all", "prompt-log.interactiveTool"], repo_root=repo_root)
+    if code == 0 and out.strip():
+        for line in out.splitlines():
+            val = line.strip()
+            if val:
+                tools.add(val)
+    return tools
+
+
+def clean_interactive_tool_response(tool_name: str, content: Any) -> str:
+    """Extracts and cleans user response text from interactive tool results."""
+    if not content:
+        return ""
+    if isinstance(content, dict):
+        for k in ("answer", "response", "result", "input", "text", "content"):
+            if k in content and isinstance(content[k], str):
+                return content[k].strip()
+        return str(content).strip()
+
+    content_str = str(content).strip()
+    if (content_str.startswith("{") and content_str.endswith("}")) or (
+        content_str.startswith("[") and content_str.endswith("]")
+    ):
+        try:
+            parsed = json.loads(content_str)
+            if isinstance(parsed, dict):
+                for k in ("answer", "response", "result", "input", "text", "content"):
+                    if k in parsed and isinstance(parsed[k], str):
+                        return parsed[k].strip()
+            elif isinstance(parsed, list):
+                return "\n".join(str(x) for x in parsed if x).strip()
+        except Exception:
+            pass
+
+    lines = content_str.splitlines()
+    body_lines = []
+    for line in lines:
+        if line.startswith("Created At:") or line.startswith("Completed At:"):
+            continue
+        body_lines.append(line)
+
+    text = "\n".join(body_lines).strip()
+    if not text:
+        return ""
+
+    cleaned_lines = []
+    for line in text.splitlines():
+        cleaned_lines.append(re.sub(r"^A\d+:\s*", "", line))
+
+    return "\n".join(cleaned_lines).strip()
+
+
+def extract_tool_completed_at(content: str) -> Optional[str]:
+    """Extracts completion ISO timestamp if present in tool execution header."""
+    m = re.search(r"Completed At:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[+-]\d{2}:\d{2}|Z)?)", content)
+    if m:
+        return m.group(1)
+    return None
+
+
 def format_utc(dt_str: str) -> str:
     """Converts ISO timestamp string to UTC string (YYYY-MM-DD HH:MM:SS UTC)."""
     if not dt_str:
@@ -631,6 +703,8 @@ class AntigravityAdapter(BaseIngestionAdapter):
 
         detected_model = None
         raw_turns: List[Tuple[str, str]] = []
+        interactive_tools = get_interactive_tool_names(repo_root=repo_root)
+        pending_tool_names: List[str] = []
 
         for step in steps:
             stype = step.get("type", "")
@@ -650,6 +724,19 @@ class AntigravityAdapter(BaseIngestionAdapter):
                 clean = clean_user_prompt(content)
                 if clean:
                     raw_turns.append((format_utc(created_at), clean))
+
+            if stype == "PLANNER_RESPONSE":
+                pending_tool_names = [tc.get("name", "") for tc in step.get("tool_calls", [])]
+            elif stype in ("GENERIC", "TOOL_RESULT"):
+                if pending_tool_names:
+                    tool_name = pending_tool_names.pop(0)
+                    if tool_name in interactive_tools:
+                        cleaned = clean_interactive_tool_response(tool_name, content)
+                        if cleaned:
+                            ts = extract_tool_completed_at(content) or created_at
+                            raw_turns.append((format_utc(ts), f"[tool:{tool_name}] {cleaned}"))
+            else:
+                pending_tool_names = []
 
         prompts = process_prompt_turns(raw_turns)
         cid = transcript_path.parent.parent.parent.name
@@ -807,6 +894,8 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
 
         detected_model = None
         raw_turns: List[Tuple[str, str]] = []
+        interactive_tools = get_interactive_tool_names(repo_root=repo_root)
+        interactive_tool_calls: Dict[str, str] = {}  # tool_use_id -> tool_name
         sid = transcript_path.stem
 
         for item in entries:
@@ -820,6 +909,40 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
 
             if item.get("sessionId") or item.get("session_id"):
                 sid = str(item.get("sessionId") or item.get("session_id"))
+
+            created_at = (
+                item.get("timestamp")
+                or item.get("created_at")
+                or item.get("time")
+                or item.get("date")
+                or ""
+            )
+
+            # Track tool_use definitions in assistant turns
+            msg_content = item.get("content") or item.get("message", {}).get("content")
+            if isinstance(msg_content, list):
+                for b in msg_content:
+                    if isinstance(b, dict):
+                        if b.get("type") == "tool_use" and b.get("name") in interactive_tools and b.get("id"):
+                            interactive_tool_calls[b["id"]] = b["name"]
+                        elif b.get("type") == "tool_result" and b.get("tool_use_id") in interactive_tool_calls:
+                            tool_name = interactive_tool_calls.pop(b["tool_use_id"])
+                            res_c = b.get("content", "")
+                            if isinstance(res_c, list):
+                                res_c = "\n".join(
+                                    str(x.get("text", x)) if isinstance(x, dict) else str(x) for x in res_c
+                                )
+                            cleaned = clean_interactive_tool_response(tool_name, res_c)
+                            if cleaned:
+                                raw_turns.append((format_utc(str(created_at)), f"[tool:{tool_name}] {cleaned}"))
+
+            if item.get("type") == "tool_use" and item.get("name") in interactive_tools and item.get("id"):
+                interactive_tool_calls[item["id"]] = item["name"]
+            elif item.get("type") == "tool_result" and item.get("tool_use_id") in interactive_tool_calls:
+                tool_name = interactive_tool_calls.pop(item["tool_use_id"])
+                cleaned = clean_interactive_tool_response(tool_name, item.get("content", ""))
+                if cleaned:
+                    raw_turns.append((format_utc(str(created_at)), f"[tool:{tool_name}] {cleaned}"))
 
             role = item.get("role") or item.get("type") or ""
             if role in ("user", "user_input", "human") or (item.get("type") == "message" and item.get("message", {}).get("role") == "user"):
@@ -838,13 +961,6 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
 
                 clean = clean_user_prompt(text)
                 if clean:
-                    created_at = (
-                        item.get("timestamp")
-                        or item.get("created_at")
-                        or item.get("time")
-                        or item.get("date")
-                        or ""
-                    )
                     raw_turns.append((format_utc(str(created_at)), clean))
 
         if not raw_turns and not detected_model:

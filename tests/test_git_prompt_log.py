@@ -1205,6 +1205,105 @@ class TestIngestionAdapters(unittest.TestCase):
         prompts = [p.text for p in parsed["prompts"]]
         self.assertEqual(prompts, ["First user message", "Second user message"])
 
+    def test_antigravity_interactive_tool_extraction(self):
+        transcript_dir = self.work_dir / "brain" / "sess-agy-test" / ".system_generated" / "logs"
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        transcript = transcript_dir / "transcript.jsonl"
+        lines = [
+            json.dumps({
+                "step_index": 1,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "created_at": "2026-09-04T12:00:00Z",
+                "content": "<USER_REQUEST>Initial user request</USER_REQUEST>",
+            }),
+            json.dumps({
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "created_at": "2026-09-04T12:01:00Z",
+                "content": "Let me ask a clarifying question.",
+                "tool_calls": [
+                    {
+                        "name": "ask_question",
+                        "args": {
+                            "questions": json.dumps([{"question": "Which architecture?", "options": ["Option 1", "Option 2"]}]),
+                        },
+                    }
+                ],
+            }),
+            json.dumps({
+                "step_index": 3,
+                "source": "MODEL",
+                "type": "GENERIC",
+                "created_at": "2026-09-04T12:01:05Z",
+                "content": "Created At: 2026-09-04T12:01:05Z\nCompleted At: 2026-09-04T12:02:30Z\nA1: Option 2",
+            }),
+            json.dumps({
+                "step_index": 4,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "created_at": "2026-09-04T12:05:00Z",
+                "content": "<USER_REQUEST>Final steer</USER_REQUEST>",
+            }),
+        ]
+        transcript.write_text("\n".join(lines), encoding="utf-8")
+
+        adapter = gpn.AntigravityAdapter()
+        parsed = adapter.parse_transcript(transcript)
+        self.assertIsNotNone(parsed)
+        prompts = [(p.timestamp, p.text) for p in parsed["prompts"]]
+        self.assertEqual(len(prompts), 3)
+        self.assertEqual(prompts[0], ("2026-09-04 12:00:00 UTC", "Initial user request"))
+        self.assertEqual(prompts[1], ("2026-09-04 12:02:30 UTC", "[tool:ask_question] Option 2"))
+        self.assertEqual(prompts[2], ("2026-09-04 12:05:00 UTC", "Final steer"))
+
+    def test_claude_interactive_tool_extraction(self):
+        transcript = self.work_dir / "claude_interactive.jsonl"
+        lines = [
+            json.dumps({
+                "type": "user",
+                "message": {"content": "Setup database"},
+                "timestamp": "2026-09-04T12:00:00Z",
+            }),
+            json.dumps({
+                "type": "assistant",
+                "message": {
+                    "model": "claude-3-7-sonnet",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_123",
+                            "name": "AskFollowupQuestion",
+                            "input": {"question": "PostgreSQL or SQLite?"},
+                        }
+                    ],
+                },
+            }),
+            json.dumps({
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_123",
+                            "content": "Use SQLite for local testing",
+                        }
+                    ]
+                },
+                "timestamp": "2026-09-04T12:02:00Z",
+            }),
+        ]
+        transcript.write_text("\n".join(lines), encoding="utf-8")
+
+        adapter = gpn.ClaudeCodeAdapter()
+        parsed = adapter.parse_transcript_file(transcript)
+        self.assertIsNotNone(parsed)
+        prompts = [(p.timestamp, p.text) for p in parsed["prompts"]]
+        self.assertEqual(len(prompts), 2)
+        self.assertEqual(prompts[0], ("2026-09-04 12:00:00 UTC", "Setup database"))
+        self.assertEqual(prompts[1], ("2026-09-04 12:02:00 UTC", "[tool:AskFollowupQuestion] Use SQLite for local testing"))
+
     def test_manual_adapter_recording(self):
         adapter = gpn.ManualAdapter()
         parsed = adapter.find_session_data(
