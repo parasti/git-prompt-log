@@ -1,18 +1,27 @@
-# Prompt Log: Feat Ingestion Capture Interactive Tool Responses As Tool Name Prompts
+# Prompt Log Export 2026-09-06 11:25:38 UTC
 
-- **Exported:** 2026-09-06 08:16:32 UTC
+- **Export command:** `git prompt-log export --stdout --range HEAD`
+- **Import command:** `git prompt-log import <file>`
+
+---
 
 - **Session:** `9674eda6-390f-4b1d-9910-72bec1843401`
 - **Harness:** Antigravity CLI 1.1.25
 - **Model:** Gemini 3.8 Flash (High)
 
+---
+
 - **Session:** `6f5dcc91-5281-4d36-bf55-f3da5c1ab997`
 - **Harness:** Antigravity CLI 1.1.26
 - **Model:** Gemini 3.8 Flash (High)
 
+---
+
 - **Session:** `264ec0fe-9040-412b-abe3-06d2c06305c3`
 - **Harness:** Antigravity CLI 1.1.26
 - **Model:** Gemini 3.8 Flash (High)
+
+---
 
 - **Session:** `78c737d3-be77-4257-b9dd-eda5d27b0d17`
 - **Harness:** Antigravity CLI 1.1.27
@@ -69,6 +78,9 @@
 - `f7915b6b` feat(cli): rename export-log and import-log to export and import
 - `438537bb` refactor(cli): remove DEFAULT_SKILL_MD and init --skill flag in favor of global skills
 - `99b5e061` feat(ingestion): capture interactive tool responses as [tool:<name>] prompts
+- `e4277094` feat(ingestion): resolve sessions across git worktrees and main repository
+- `2333ac81` feat(export): simplify heading to '# Prompt Log' and record export and import commands
+- `6c41129b` feat(export): separate metadata and session blocks with horizontal rules
 
 ## Steering Prompts
 
@@ -243,6 +255,8 @@
 
 > I would be inclined to say to reverse the recorded list, so the causal prompt is already at the top.
 
+---
+
 ### Session `6f5dcc91` (Gemini 3.8 Flash (High))
 
 #### [2026-09-04 15:24:55 UTC]
@@ -308,6 +322,8 @@
 #### [2026-09-04 16:10:18 UTC]
 
 > Remove .agents folder, don't think I need it.
+
+---
 
 ### Session `264ec0fe` (Gemini 3.8 Flash (High))
 
@@ -455,6 +471,8 @@
 
 > Exported file header lumps separate sessions into one list - add a paragraph break between them
 
+---
+
 ### Session `78c737d3` (Gemini 3.8 Flash (High))
 
 #### [2026-09-05 18:20:54 UTC]
@@ -517,11 +535,36 @@
 
 > Yes, candidate 1 is good.
 
+#### [2026-09-06 10:48:29 UTC]
+
+> How does `git prompt-log record` know which session to read from?
+
+#### [2026-09-06 10:52:46 UTC]
+
+> When I execute it in a "human terminal", will it correctly pick a session if I run it in a git worktree that is nested inside a main git worktree (e.g. under .worktrees/stuff)?
+
+#### [2026-09-06 10:54:58 UTC]
+
+> Implement this.
+
+#### [2026-09-06 11:02:44 UTC]
+
+> When I do "git prompt-log export --stdout --range HEAD > prompts/...", the heading is kind of bizarre. "Prompt Log: Feat Ingestion Capture Interactive Tool Responses As Tool Name Prompts" - I don't even know what this means. Where does that come from?
+
+#### [2026-09-06 11:05:50 UTC]
+
+> I don't even care about the title, remove it. Things that I care about: the command that generates the log, the command I can import the log with and the date/time (UTC) of export.
+
+#### [2026-09-06 11:09:43 UTC]
+
+> Add hr separators to the blocks, the single empty line doens't seem to be doing it for Github renderer
+
 <!-- git-prompt-log:metadata
 {
   "version": 1,
-  "exported_at": "2026-09-06 08:16:32 UTC",
-  "slug": "feat_ingestion_capture_interactive_tool_responses_as_tool_name_prompts",
+  "exported_at": "2026-09-06 11:25:38 UTC",
+  "export_command": "git prompt-log export --stdout --range HEAD",
+  "import_command": "git prompt-log import <file>",
   "commits": [
     {
       "hash": "73e9d0a8b951b2b13f9cdef66819679d0c36bbdd",
@@ -767,6 +810,21 @@
       "hash": "99b5e06116258bed44cc3b7a95b0a2edfcf70386",
       "subject": "feat(ingestion): capture interactive tool responses as [tool:<name>] prompts",
       "note": "Assistant-Session: 78c737d3-be77-4257-b9dd-eda5d27b0d17\nAssistant-Harness: Antigravity CLI 1.1.27\nAssistant-Model: Gemini 3.8 Flash (High)\nAssistant-Recorded: 2026-09-06 08:14:43 UTC\n\nAssistant-Prompts:\n  [2026-09-06 07:04:18 UTC] Yes, candidate 1 is good.\n  [2026-09-06 07:03:22 UTC] The question I don't care about, but the user responses I do care about. In claude there are tools that even enable you to type in free form responses to tool calls.\n  [2026-09-06 06:58:33 UTC] Given it's a tool call input, maybe let's figure out a format that works for arbitrary forms of this. Not interpreting what the thing is (e.g., calling tool \"ask_question\" response a \"choice\" is interpretation)\n  [2026-09-06 06:27:56 UTC] Nice. While doing this I realized that you gave me a multiple choice and I picked an answer, and this is not recorded in the prompt log. Wonder if we can represent this in a standard way, it does represent a substantial user-made decision.\n  [2026-09-06 06:21:53 UTC] [tool:ask_question] Remove DEFAULT_SKILL_MD and the --skill flag from init entirely (rely exclusively on global skills)\n  [2026-09-06 06:16:51 UTC] Okay, my gut says remove it or embed at install time, to avoid desync issues.\n  [2026-09-06 06:15:28 UTC] Does DEFAULT_SKILL_MD match the actual current version of the skill\n  [2026-09-06 06:07:00 UTC] Rename import-log and export-log to shorter \"import\" and \"export\" and update docs/scripts to match. Commit your changes.\n  [2026-09-06 05:57:42 UTC] Evaluate benefits/drawbacks of writing to the commits ref vs having a dedicated notes ref for prompt logs\n  [2026-09-06 05:50:22 UTC] Less like marketing, more like a sidenote example.\n  [2026-09-06 05:44:24 UTC] Trim it down, it's not the most important example - more like a sidenote.\n  [2026-09-06 05:40:33 UTC] Add an example that demonstrates that you can also not have the agent commit, but commit yourself and record prompts later with git prompt-log record. Commit this change.\n  [2026-09-06 05:25:22 UTC] Update the log subcommand to show a placeholder when the commit has no prompt notes \"no prompts recorded\"\n  [2026-09-06 05:10:43 UTC] Update readme and skill.md to reflect this new behavior: in examples, prefer the shorter version.\n  [2026-09-05 18:20:54 UTC] Update tool so plain `git prompt-log` behaves effectively as if `git prompt-log log` had been invoked."
+    },
+    {
+      "hash": "e42770941ac70086a4d061fdf8b91cd80c3c8f4d",
+      "subject": "feat(ingestion): resolve sessions across git worktrees and main repository",
+      "note": "Assistant-Session: 78c737d3-be77-4257-b9dd-eda5d27b0d17\nAssistant-Harness: Antigravity CLI 1.1.27\nAssistant-Model: Gemini 3.8 Flash (High)\nAssistant-Recorded: 2026-09-06 11:00:13 UTC\n\nAssistant-Prompts:\n  [2026-09-06 10:54:58 UTC] Implement this.\n  [2026-09-06 10:52:46 UTC] When I execute it in a \"human terminal\", will it correctly pick a session if I run it in a git worktree that is nested inside a main git worktree (e.g. under .worktrees/stuff)?\n  [2026-09-06 10:48:29 UTC] How does `git prompt-log record` know which session to read from?\n  [2026-09-06 07:04:18 UTC] Yes, candidate 1 is good.\n  [2026-09-06 07:03:22 UTC] The question I don't care about, but the user responses I do care about. In claude there are tools that even enable you to type in free form responses to tool calls.\n  [2026-09-06 06:58:33 UTC] Given it's a tool call input, maybe let's figure out a format that works for arbitrary forms of this. Not interpreting what the thing is (e.g., calling tool \"ask_question\" response a \"choice\" is interpretation)\n  [2026-09-06 06:27:56 UTC] Nice. While doing this I realized that you gave me a multiple choice and I picked an answer, and this is not recorded in the prompt log. Wonder if we can represent this in a standard way, it does represent a substantial user-made decision.\n  [2026-09-06 06:21:53 UTC] [tool:ask_question] Remove DEFAULT_SKILL_MD and the --skill flag from init entirely (rely exclusively on global skills)\n  [2026-09-06 06:16:51 UTC] Okay, my gut says remove it or embed at install time, to avoid desync issues.\n  [2026-09-06 06:15:28 UTC] Does DEFAULT_SKILL_MD match the actual current version of the skill\n  [2026-09-06 06:07:00 UTC] Rename import-log and export-log to shorter \"import\" and \"export\" and update docs/scripts to match. Commit your changes.\n  [2026-09-06 05:57:42 UTC] Evaluate benefits/drawbacks of writing to the commits ref vs having a dedicated notes ref for prompt logs\n  [2026-09-06 05:50:22 UTC] Less like marketing, more like a sidenote example.\n  [2026-09-06 05:44:24 UTC] Trim it down, it's not the most important example - more like a sidenote.\n  [2026-09-06 05:40:33 UTC] Add an example that demonstrates that you can also not have the agent commit, but commit yourself and record prompts later with git prompt-log record. Commit this change.\n  [2026-09-06 05:25:22 UTC] Update the log subcommand to show a placeholder when the commit has no prompt notes \"no prompts recorded\"\n  [2026-09-06 05:10:43 UTC] Update readme and skill.md to reflect this new behavior: in examples, prefer the shorter version.\n  [2026-09-05 18:20:54 UTC] Update tool so plain `git prompt-log` behaves effectively as if `git prompt-log log` had been invoked."
+    },
+    {
+      "hash": "2333ac81ac6c91d2a719d63512f92138b99c429a",
+      "subject": "feat(export): simplify heading to '# Prompt Log' and record export and import commands",
+      "note": "Assistant-Session: 78c737d3-be77-4257-b9dd-eda5d27b0d17\nAssistant-Harness: Antigravity CLI 1.1.27\nAssistant-Model: Gemini 3.8 Flash (High)\nAssistant-Recorded: 2026-09-06 11:08:57 UTC\n\nAssistant-Prompts:\n  [2026-09-06 11:05:50 UTC] I don't even care about the title, remove it. Things that I care about: the command that generates the log, the command I can import the log with and the date/time (UTC) of export.\n  [2026-09-06 11:02:44 UTC] When I do \"git prompt-log export --stdout --range HEAD > prompts/...\", the heading is kind of bizarre. \"Prompt Log: Feat Ingestion Capture Interactive Tool Responses As Tool Name Prompts\" - I don't even know what this means. Where does that come from?\n  [2026-09-06 10:54:58 UTC] Implement this.\n  [2026-09-06 10:52:46 UTC] When I execute it in a \"human terminal\", will it correctly pick a session if I run it in a git worktree that is nested inside a main git worktree (e.g. under .worktrees/stuff)?\n  [2026-09-06 10:48:29 UTC] How does `git prompt-log record` know which session to read from?\n  [2026-09-06 07:04:18 UTC] Yes, candidate 1 is good.\n  [2026-09-06 07:03:22 UTC] The question I don't care about, but the user responses I do care about. In claude there are tools that even enable you to type in free form responses to tool calls.\n  [2026-09-06 06:58:33 UTC] Given it's a tool call input, maybe let's figure out a format that works for arbitrary forms of this. Not interpreting what the thing is (e.g., calling tool \"ask_question\" response a \"choice\" is interpretation)\n  [2026-09-06 06:27:56 UTC] Nice. While doing this I realized that you gave me a multiple choice and I picked an answer, and this is not recorded in the prompt log. Wonder if we can represent this in a standard way, it does represent a substantial user-made decision.\n  [2026-09-06 06:21:53 UTC] [tool:ask_question] Remove DEFAULT_SKILL_MD and the --skill flag from init entirely (rely exclusively on global skills)\n  [2026-09-06 06:16:51 UTC] Okay, my gut says remove it or embed at install time, to avoid desync issues.\n  [2026-09-06 06:15:28 UTC] Does DEFAULT_SKILL_MD match the actual current version of the skill\n  [2026-09-06 06:07:00 UTC] Rename import-log and export-log to shorter \"import\" and \"export\" and update docs/scripts to match. Commit your changes.\n  [2026-09-06 05:57:42 UTC] Evaluate benefits/drawbacks of writing to the commits ref vs having a dedicated notes ref for prompt logs\n  [2026-09-06 05:50:22 UTC] Less like marketing, more like a sidenote example.\n  [2026-09-06 05:44:24 UTC] Trim it down, it's not the most important example - more like a sidenote.\n  [2026-09-06 05:40:33 UTC] Add an example that demonstrates that you can also not have the agent commit, but commit yourself and record prompts later with git prompt-log record. Commit this change.\n  [2026-09-06 05:25:22 UTC] Update the log subcommand to show a placeholder when the commit has no prompt notes \"no prompts recorded\"\n  [2026-09-06 05:10:43 UTC] Update readme and skill.md to reflect this new behavior: in examples, prefer the shorter version.\n  [2026-09-05 18:20:54 UTC] Update tool so plain `git prompt-log` behaves effectively as if `git prompt-log log` had been invoked."
+    },
+    {
+      "hash": "6c41129b52c253b030e516194bf1fca36374be43",
+      "subject": "feat(export): separate metadata and session blocks with horizontal rules",
+      "note": "Assistant-Session: 78c737d3-be77-4257-b9dd-eda5d27b0d17\nAssistant-Harness: Antigravity CLI 1.1.27\nAssistant-Model: Gemini 3.8 Flash (High)\nAssistant-Recorded: 2026-09-06 11:11:25 UTC\n\nAssistant-Prompts:\n  [2026-09-06 11:09:43 UTC] Add hr separators to the blocks, the single empty line doens't seem to be doing it for Github renderer\n  [2026-09-06 11:05:50 UTC] I don't even care about the title, remove it. Things that I care about: the command that generates the log, the command I can import the log with and the date/time (UTC) of export.\n  [2026-09-06 11:02:44 UTC] When I do \"git prompt-log export --stdout --range HEAD > prompts/...\", the heading is kind of bizarre. \"Prompt Log: Feat Ingestion Capture Interactive Tool Responses As Tool Name Prompts\" - I don't even know what this means. Where does that come from?\n  [2026-09-06 10:54:58 UTC] Implement this.\n  [2026-09-06 10:52:46 UTC] When I execute it in a \"human terminal\", will it correctly pick a session if I run it in a git worktree that is nested inside a main git worktree (e.g. under .worktrees/stuff)?\n  [2026-09-06 10:48:29 UTC] How does `git prompt-log record` know which session to read from?\n  [2026-09-06 07:04:18 UTC] Yes, candidate 1 is good.\n  [2026-09-06 07:03:22 UTC] The question I don't care about, but the user responses I do care about. In claude there are tools that even enable you to type in free form responses to tool calls.\n  [2026-09-06 06:58:33 UTC] Given it's a tool call input, maybe let's figure out a format that works for arbitrary forms of this. Not interpreting what the thing is (e.g., calling tool \"ask_question\" response a \"choice\" is interpretation)\n  [2026-09-06 06:27:56 UTC] Nice. While doing this I realized that you gave me a multiple choice and I picked an answer, and this is not recorded in the prompt log. Wonder if we can represent this in a standard way, it does represent a substantial user-made decision.\n  [2026-09-06 06:21:53 UTC] [tool:ask_question] Remove DEFAULT_SKILL_MD and the --skill flag from init entirely (rely exclusively on global skills)\n  [2026-09-06 06:16:51 UTC] Okay, my gut says remove it or embed at install time, to avoid desync issues.\n  [2026-09-06 06:15:28 UTC] Does DEFAULT_SKILL_MD match the actual current version of the skill\n  [2026-09-06 06:07:00 UTC] Rename import-log and export-log to shorter \"import\" and \"export\" and update docs/scripts to match. Commit your changes.\n  [2026-09-06 05:57:42 UTC] Evaluate benefits/drawbacks of writing to the commits ref vs having a dedicated notes ref for prompt logs\n  [2026-09-06 05:50:22 UTC] Less like marketing, more like a sidenote example.\n  [2026-09-06 05:44:24 UTC] Trim it down, it's not the most important example - more like a sidenote.\n  [2026-09-06 05:40:33 UTC] Add an example that demonstrates that you can also not have the agent commit, but commit yourself and record prompts later with git prompt-log record. Commit this change.\n  [2026-09-06 05:25:22 UTC] Update the log subcommand to show a placeholder when the commit has no prompt notes \"no prompts recorded\"\n  [2026-09-06 05:10:43 UTC] Update readme and skill.md to reflect this new behavior: in examples, prefer the shorter version.\n  [2026-09-05 18:20:54 UTC] Update tool so plain `git prompt-log` behaves effectively as if `git prompt-log log` had been invoked."
     }
   ]
 }

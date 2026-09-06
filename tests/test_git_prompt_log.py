@@ -6,6 +6,7 @@ Unit and integration tests for git-prompt-log.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -473,11 +474,14 @@ class TestExportAndImportLog(unittest.TestCase):
         )
         self.assertTrue(out_file.exists())
         log_content = out_file.read_text(encoding="utf-8")
-        self.assertTrue(log_content.startswith("# Prompt Log\n\n- **Exported:** "))
+        self.assertTrue(log_content.startswith("# Prompt Log Export "))
         self.assertIn("- **Export command:** `git prompt-log export --output", log_content)
         self.assertIn("- **Import command:** `git prompt-log import prompts/test_export.md`", log_content)
         self.assertIn("Build feature one", log_content)
         self.assertIn("<!-- git-prompt-log:metadata", log_content)
+        import_meta = json.loads(re.search(r"<!-- git-prompt-log:metadata\s*(.*?)\s*-->", log_content, re.DOTALL).group(1))
+        self.assertNotIn("slug", import_meta)
+        self.assertIn("exported_at", import_meta)
 
         # Test export to stdout format
         res_stdout = subprocess.run(
@@ -487,7 +491,7 @@ class TestExportAndImportLog(unittest.TestCase):
             text=True,
         )
         self.assertEqual(res_stdout.returncode, 0)
-        self.assertTrue(res_stdout.stdout.startswith("# Prompt Log\n\n- **Exported:** "))
+        self.assertTrue(res_stdout.stdout.startswith("# Prompt Log Export "))
         self.assertIn("- **Export command:** `git prompt-log export --stdout --range HEAD`", res_stdout.stdout)
         self.assertIn("- **Import command:** `git prompt-log import <file>`", res_stdout.stdout)
 

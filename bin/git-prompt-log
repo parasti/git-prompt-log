@@ -1974,9 +1974,8 @@ def cmd_export_log(args: argparse.Namespace) -> int:
 
     # Generate Markdown content
     lines = []
-    lines.append("# Prompt Log")
+    lines.append(f"# Prompt Log Export {ts_human}")
     lines.append("")
-    lines.append(f"- **Exported:** {ts_human}")
     lines.append(f"- **Export command:** `{export_cmd}`")
     lines.append(f"- **Import command:** `{import_cmd}`")
     for s in merged_sessions:
@@ -2013,7 +2012,6 @@ def cmd_export_log(args: argparse.Namespace) -> int:
         "exported_at": ts_human,
         "export_command": export_cmd,
         "import_command": import_cmd,
-        "slug": slug,
         "commits": [
             {
                 "hash": c["hash"],
