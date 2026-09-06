@@ -337,6 +337,28 @@ def get_common_git_dir(repo_root: Optional[Path] = None) -> Path:
     return (repo_root or Path.cwd()) / ".git"
 
 
+def get_repo_identifiers(repo_root: Optional[Path] = None) -> Set[str]:
+    """Returns a set of repository paths and names, including the main working tree if in a linked worktree."""
+    raw_repo = repo_root or get_repo_root()
+    repo = raw_repo.resolve()
+    identifiers = {
+        str(raw_repo).lower(),
+        str(repo).lower(),
+        repo.name.lower(),
+        raw_repo.name.lower(),
+    }
+    try:
+        common_git = get_common_git_dir(repo).resolve()
+        if common_git.name == ".git":
+            main_root = common_git.parent.resolve()
+            identifiers.add(str(main_root).lower())
+            identifiers.add(str(common_git.parent).lower())
+            identifiers.add(main_root.name.lower())
+    except Exception:
+        pass
+    return identifiers
+
+
 def get_note_content(commit_hash: str, ref: str = DEFAULT_NOTES_REF, repo_root: Optional[Path] = None) -> Optional[str]:
     """Retrieves existing git note content for a commit, or None if no note exists."""
     code, out, _ = run_git(["notes", f"--ref={ref}", "show", commit_hash], repo_root=repo_root)
@@ -640,7 +662,7 @@ class AntigravityAdapter(BaseIngestionAdapter):
             return None
 
         repo = repo_root or get_repo_root()
-        repo_strs = {str(repo).lower(), repo.name.lower()}
+        repo_strs = get_repo_identifiers(repo)
         matching = []
 
         for cid_dir in brain.iterdir():
@@ -779,7 +801,7 @@ class AntigravityAdapter(BaseIngestionAdapter):
                 return None
 
         # Auto-detect latest active session matching repo
-        repo_strs = {str(repo).lower(), repo.name.lower()}
+        repo_strs = get_repo_identifiers(repo)
         matching = []
         now_ts = datetime.datetime.now().timestamp()
 
@@ -853,6 +875,13 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
             in_repo = repo_root / ".claude"
             if in_repo.exists():
                 dirs.append(in_repo)
+            common_git = get_common_git_dir(repo_root)
+            if common_git and common_git.name == ".git":
+                main_root = common_git.parent.resolve()
+                if main_root != repo_root.resolve():
+                    main_in_repo = main_root / ".claude"
+                    if main_in_repo.exists():
+                        dirs.append(main_in_repo)
         return dirs
 
     def parse_transcript_file(
@@ -1014,7 +1043,7 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
 
         candidates: List[Tuple[float, Path]] = []
         now_ts = datetime.datetime.now().timestamp()
-        repo_strs = {str(repo).lower(), repo.name.lower()}
+        repo_strs = get_repo_identifiers(repo)
 
         for d in dirs:
             if not d.exists():

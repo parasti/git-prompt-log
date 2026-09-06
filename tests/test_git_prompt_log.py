@@ -1155,7 +1155,7 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
 class TestIngestionAdapters(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.work_dir = Path(self.temp_dir.name)
+        self.work_dir = Path(self.temp_dir.name).resolve()
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -1592,6 +1592,80 @@ class TestIngestionAdapters(unittest.TestCase):
                 break
         self.assertTrue(found_unprompted)
         self.assertTrue(found_placeholder)
+
+    def test_worktree_session_detection(self):
+        # 1. Setup main repository
+        main_repo = self.work_dir / "main_repo"
+        main_repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=main_repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=main_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=main_repo, check=True)
+        (main_repo / "main_file.txt").write_text("main file")
+        subprocess.run(["git", "add", "."], cwd=main_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "chore: initial commit on main"], cwd=main_repo, check=True)
+
+        # 2. Create a nested worktree at .worktrees/feature-wt
+        wt_dir = main_repo / ".worktrees" / "feature-wt"
+        subprocess.run(["git", "worktree", "add", "-b", "feature", str(wt_dir)], cwd=main_repo, check=True, capture_output=True)
+
+        # 3. Create mock Antigravity transcript referencing main_repo path (session opened in main repo)
+        brain_dir = self.work_dir / "brain"
+        session_id = "sess-worktree-test-1234"
+        t_dir = brain_dir / session_id / ".system_generated" / "logs"
+        t_dir.mkdir(parents=True, exist_ok=True)
+        transcript = t_dir / "transcript.jsonl"
+        lines = [
+            json.dumps({
+                "step_index": 1,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "created_at": "2026-09-04T12:00:00Z",
+                "content": f"<USER_REQUEST>Work in {main_repo} on feature</USER_REQUEST>",
+            }),
+            json.dumps({
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "created_at": "2026-09-04T12:01:00Z",
+                "content": "Done.",
+            }),
+        ]
+        transcript.write_text("\n".join(lines), encoding="utf-8")
+
+        adapter = gpn.AntigravityAdapter()
+
+        # Verify get_repo_identifiers resolves both worktree and main repo
+        wt_identifiers = gpn.get_repo_identifiers(repo_root=wt_dir)
+        self.assertIn(str(wt_dir).lower(), wt_identifiers)
+        self.assertIn(wt_dir.name.lower(), wt_identifiers)
+        self.assertIn(str(main_repo).lower(), wt_identifiers)
+        self.assertIn(main_repo.name.lower(), wt_identifiers)
+
+        # Verify AntigravityAdapter resolves main_repo session from inside worktree
+        orig_get_brain = gpn.get_brain_dir
+        gpn.get_brain_dir = lambda: brain_dir
+        orig_env = os.environ.copy()
+        os.environ.pop("AGY_SESSION_ID", None)
+        os.environ.pop("ANTIGRAVITY_CONVERSATION_ID", None)
+        try:
+            detected_sid = adapter.detect_session_id(repo_root=wt_dir)
+            self.assertEqual(detected_sid, session_id)
+
+            session_data = adapter.find_session_data(repo_root=wt_dir)
+            self.assertIsNotNone(session_data)
+            self.assertEqual(session_data["session_id"], session_id)
+            self.assertEqual(len(session_data["prompts"]), 1)
+            self.assertIn("feature", session_data["prompts"][0].text)
+        finally:
+            gpn.get_brain_dir = orig_get_brain
+            os.environ.clear()
+            os.environ.update(orig_env)
+
+        # Verify ClaudeCodeAdapter resolves main_repo .claude directory from inside worktree
+        (main_repo / ".claude").mkdir(parents=True, exist_ok=True)
+        claude_adapter = gpn.ClaudeCodeAdapter()
+        claude_dirs = claude_adapter._get_claude_dirs(repo_root=wt_dir)
+        self.assertIn(main_repo / ".claude", claude_dirs)
 
 
 if __name__ == "__main__":
