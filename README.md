@@ -86,7 +86,11 @@ Git notes are not pushed or fetched by default during standard `git push` or Git
 
 2. **Re-hydrate on Merge (Maintainer):** When the PR merges into `main` (even if squashed or rebased via GitHub's web UI), restore the notes on `main`:
    ```bash
+   # Re-hydrate a specific log file:
    git prompt-log import prompts/YYYY_MM_DD_HHMMSS_<slug>.md
+
+   # Re-hydrate multiple logs (e.g. via shell glob):
+   git prompt-log import prompts/*.md
    ```
    The tool matches commits by commit subject or hash and re-attaches prompt provenance into `refs/notes/commits`.
 

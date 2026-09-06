@@ -2053,22 +2053,18 @@ def cmd_export_log(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_import_log(args: argparse.Namespace) -> int:
-    """
-    Imports prompt notes from an exported log file back into Git notes (refs/notes/commits).
-    Reconciles commits by exact hash, or falls back to matching by commit subject if squashed/rebased.
-    """
-    repo_root = get_repo_root()
-    ref = args.ref
-    log_file = Path(args.file)
-    if not log_file.is_absolute():
-        log_file = repo_root / log_file
-
-    if not log_file.is_file():
-        sys.stderr.write(f"Error: Log file '{log_file}' not found.\n")
-        return 1
-
-    content = log_file.read_text(encoding="utf-8")
+def import_single_file(
+    log_file: Path,
+    repo_root: Path,
+    ref: str = DEFAULT_NOTES_REF,
+    commit_override: Optional[str] = None,
+) -> int:
+    """Imports prompt notes from a single exported markdown file into git notes."""
+    try:
+        content = log_file.read_text(encoding="utf-8")
+    except Exception as e:
+        sys.stderr.write(f"Error reading '{log_file}': {e}\n")
+        return 0
 
     # Extract metadata block if present
     meta_m = re.search(r"<!-- (?:git-prompt-log|git-prompt-note):metadata\s*(.*?)\s*-->", content, re.DOTALL)
@@ -2079,8 +2075,8 @@ def cmd_import_log(args: argparse.Namespace) -> int:
             data = json.loads(meta_m.group(1))
             commits_data = data.get("commits", [])
         except Exception as e:
-            sys.stderr.write(f"Error parsing metadata envelope: {e}\n")
-            return 1
+            sys.stderr.write(f"Error parsing metadata envelope in '{log_file}': {e}\n")
+            return 0
 
         for c_entry in commits_data:
             orig_hash = c_entry.get("hash", "")
@@ -2092,8 +2088,8 @@ def cmd_import_log(args: argparse.Namespace) -> int:
             target_sha = None
 
             # Explicit commit override
-            if args.commit:
-                target_sha = args.commit
+            if commit_override:
+                target_sha = commit_override
             else:
                 # Check if exact hash exists and is reachable from HEAD in current repository
                 if orig_hash:
@@ -2141,14 +2137,14 @@ def cmd_import_log(args: argparse.Namespace) -> int:
         # Plain markdown fallback: parse the note block directly from content
         parsed = parse_notes(content)
         if not parsed:
-            sys.stderr.write("Error: No parseable prompt notes or metadata found in log file.\n")
-            return 1
+            sys.stderr.write(f"Error: No parseable prompt notes or metadata found in '{log_file}'.\n")
+            return 0
 
-        target_sha = args.commit or "HEAD"
+        target_sha = commit_override or "HEAD"
         c, out, _ = run_git(["rev-parse", target_sha], repo_root=repo_root)
         if c != 0:
             sys.stderr.write(f"Error resolving target commit '{target_sha}'.\n")
-            return 1
+            return 0
         resolved_sha = out.strip()
 
         existing_raw = get_note_content(resolved_sha, ref=ref, repo_root=repo_root) or ""
@@ -2162,7 +2158,59 @@ def cmd_import_log(args: argparse.Namespace) -> int:
             print(f"Imported prompt note for {resolved_sha[:8]} from markdown")
             imported_count += 1
 
-    return 0 if imported_count > 0 else 1
+    return imported_count
+
+
+def cmd_import_log(args: argparse.Namespace) -> int:
+    """
+    Imports prompt notes from exported log file(s) back into Git notes (refs/notes/commits).
+    Reconciles commits by exact hash, or falls back to matching by commit subject if squashed/rebased.
+    """
+    repo_root = get_repo_root()
+    ref = args.ref
+    raw_inputs = getattr(args, "files", None) or [getattr(args, "file", None)]
+    raw_inputs = [r for r in raw_inputs if r]
+
+    if not raw_inputs:
+        sys.stderr.write("Error: No file specified.\n")
+        return 1
+
+    resolved_files: List[Path] = []
+    seen: Set[Path] = set()
+    has_errors = False
+
+    for item in raw_inputs:
+        p = Path(item)
+        if not p.is_absolute():
+            p = repo_root / p
+        if not p.exists():
+            sys.stderr.write(f"Error: Log file '{p}' not found.\n")
+            has_errors = True
+        elif p.is_dir():
+            sys.stderr.write(f"Error: '{p}' is a directory. Folder import is not supported; pass files directly (e.g. prompts/*.md).\n")
+            has_errors = True
+        elif not p.is_file():
+            sys.stderr.write(f"Error: Log file '{p}' is not a regular file.\n")
+            has_errors = True
+        else:
+            res = p.resolve()
+            if res not in seen:
+                seen.add(res)
+                resolved_files.append(p)
+
+    if not resolved_files:
+        return 1
+
+    total_imported = 0
+    for lf in resolved_files:
+        total_imported += import_single_file(lf, repo_root=repo_root, ref=ref, commit_override=args.commit)
+
+    if len(resolved_files) > 1:
+        print(f"Total prompt notes imported across {len(resolved_files)} files: {total_imported}")
+
+    if has_errors and total_imported == 0:
+        return 1
+    return 0 if total_imported > 0 else 1
 
 
 def cmd_session(args: argparse.Namespace) -> int:
@@ -2658,7 +2706,7 @@ def main():
         help="Import prompt notes from an exported markdown log file into git notes",
         parents=[base_parser],
     )
-    p_import.add_argument("file", help="Path to exported prompt log markdown file")
+    p_import.add_argument("files", nargs="+", help="Path(s) to exported prompt log markdown file(s)")
     p_import.add_argument("--commit", "-c", help="Attach to a specific target commit instead of resolving from log")
 
     # session

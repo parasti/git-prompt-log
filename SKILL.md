@@ -61,9 +61,13 @@ This detects the branch range against the upstream base branch, generates `promp
 ### Upstream Re-hydration (After Merge)
 When asked to land, import, or re-hydrate notes on `main` after a PR merge:
 ```bash
+# Single file
 git prompt-log import prompts/YYYY_MM_DD_HHMMSS_<slug>.md
+
+# Multiple files (e.g. via shell glob)
+git prompt-log import prompts/*.md
 ```
-This matches landed commits by commit hash or commit subject and attaches the prompt provenance back to `refs/notes/commits`.
+This matches landed commits by commit hash or commit subject and attaches the prompt provenance back to `refs/notes/commits`. Note: directory paths are rejected; pass files directly (e.g. `prompts/*.md`).
 
 ### Manual Recording & Filtering
 If the user asks to record prompts manually (e.g. after committing changes themselves rather than having the assistant commit) or filter out specific turns:

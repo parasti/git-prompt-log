@@ -604,6 +604,75 @@ class TestExportAndImportLog(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertEqual(notes[0].prompts[0].text, "Steer feature")
 
+    def test_import_multi_file(self):
+        self._commit("base.txt", "base", "chore: base")
+        sha1 = self._commit("f_multi1.txt", "m1", "feat: Multi 1")
+        note1 = gpn.SessionNote(
+            session_id="sess-m1",
+            harness="Antigravity CLI 1.1.27",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:00:00 UTC",
+            prompts=[gpn.PromptEntry("2026-09-04 00:59:00", "Prompt for m1")],
+        )
+        gpn.write_note_content(sha1, note1.format(), repo_root=self.repo_dir)
+
+        sha2 = self._commit("f_multi2.txt", "m2", "feat: Multi 2")
+        note2 = gpn.SessionNote(
+            session_id="sess-m2",
+            harness="Claude Code",
+            model="Claude 3.7 Sonnet",
+            recorded_at="2026-09-04 02:00:00 UTC",
+            prompts=[gpn.PromptEntry("2026-09-04 01:59:00", "Prompt for m2")],
+        )
+        gpn.write_note_content(sha2, note2.format(), repo_root=self.repo_dir)
+
+        p_dir = self.repo_dir / "prompts"
+        p_dir.mkdir(parents=True, exist_ok=True)
+        log1 = p_dir / "log_one.md"
+        log2 = p_dir / "log_two.md"
+        script_path = Path(gpn.__file__).resolve()
+
+        subprocess.run(
+            ["python3", str(script_path), "export", "--output", str(log1), "--range", f"{sha1}~1..{sha1}"],
+            cwd=self.repo_dir,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["python3", str(script_path), "export", "--output", str(log2), "--range", f"{sha2}~1..{sha2}"],
+            cwd=self.repo_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        # Remove both notes
+        subprocess.run(["git", "notes", "remove", sha1], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "notes", "remove", sha2], cwd=self.repo_dir, check=True, capture_output=True)
+        self.assertIsNone(gpn.get_note_content(sha1, repo_root=self.repo_dir))
+        self.assertIsNone(gpn.get_note_content(sha2, repo_root=self.repo_dir))
+
+        # 1. Test importing with multiple positional file arguments (as expanded by shell globbing)
+        res_multi = subprocess.run(
+            ["python3", str(script_path), "import", "prompts/log_one.md", "prompts/log_two.md"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_multi.returncode, 0)
+        self.assertIn("Total prompt notes imported across 2 files: 2", res_multi.stdout)
+        self.assertIsNotNone(gpn.get_note_content(sha1, repo_root=self.repo_dir))
+        self.assertIsNotNone(gpn.get_note_content(sha2, repo_root=self.repo_dir))
+
+        # 2. Test folder rejection
+        res_folder = subprocess.run(
+            ["python3", str(script_path), "import", "prompts"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(res_folder.returncode, 0)
+        self.assertIn("Folder import is not supported; pass files directly", res_folder.stderr)
+
     def test_export_multiple_sessions_header_paragraph_breaks(self):
         self._commit("base.txt", "base", "chore: initial base")
         sha1 = self._commit("file_s1.txt", "s1", "feat: Session 1 commit")
