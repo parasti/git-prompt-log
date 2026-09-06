@@ -2028,7 +2028,7 @@ def cmd_export_log(args: argparse.Namespace) -> int:
             key = (s.session_id, p.timestamp, p.text.strip())
             landed_commits = prompt_to_commits.get(key, [])
             if landed_commits:
-                lines.append("Commits created:")
+                lines.append("Commits:")
                 for lc in landed_commits:
                     lines.append(f"- `{lc['hash'][:8]}` {lc['subject']}")
                 lines.append("")
