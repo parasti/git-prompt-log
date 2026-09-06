@@ -475,6 +475,7 @@ class TestExportAndImportLog(unittest.TestCase):
         self.assertTrue(out_file.exists())
         log_content = out_file.read_text(encoding="utf-8")
         self.assertTrue(log_content.startswith("# Prompt Log Export "))
+        self.assertIn("- **Tool:** [git-prompt-log](https://github.com/parasti/git-prompt-log)", log_content)
         self.assertIn("- **Export command:** `git prompt-log export --output", log_content)
         self.assertIn("- **Import command:** `git prompt-log import prompts/test_export.md`", log_content)
         self.assertIn("Build feature one", log_content)
@@ -492,6 +493,7 @@ class TestExportAndImportLog(unittest.TestCase):
         )
         self.assertEqual(res_stdout.returncode, 0)
         self.assertTrue(res_stdout.stdout.startswith("# Prompt Log Export "))
+        self.assertIn("- **Tool:** [git-prompt-log](https://github.com/parasti/git-prompt-log)", res_stdout.stdout)
         self.assertIn("- **Export command:** `git prompt-log export --stdout --range HEAD`", res_stdout.stdout)
         self.assertIn("- **Import command:** `git prompt-log import <file>`", res_stdout.stdout)
 
