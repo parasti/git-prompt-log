@@ -1702,9 +1702,11 @@ def cmd_log(args: argparse.Namespace) -> int:
         subj = parts[1] if len(parts) > 1 else ""
         note_raw = get_note_content(c_hash, ref=args.ref, repo_root=repo_root)
         lines.append(f"* {c_yellow}{c_hash[:8]}{c_reset} {c_bold}{subj}{c_reset}")
+        has_prompts = False
         if note_raw:
             notes = parse_notes(note_raw)
             if notes and notes[0].prompts:
+                has_prompts = True
                 if getattr(args, "full", False):
                     for p in notes[0].prompts:
                         indented = p.text.replace("\n", "\n    ")
@@ -1713,6 +1715,8 @@ def cmd_log(args: argparse.Namespace) -> int:
                     active_p = max(notes[0].prompts, key=lambda p: parse_timestamp_sort_key(p.timestamp))
                     indented = active_p.text.replace("\n", "\n    ")
                     lines.append(f"  {c_cyan}[{active_p.timestamp}]{c_reset} {indented}")
+        if not has_prompts:
+            lines.append("  no prompts recorded")
         lines.append("")
 
     full_output = "\n".join(lines)

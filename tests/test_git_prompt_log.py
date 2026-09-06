@@ -1427,6 +1427,59 @@ class TestIngestionAdapters(unittest.TestCase):
         )
         self.assertEqual(res_invalid.returncode, 2)
 
+    def test_log_placeholder_when_no_prompts(self):
+        repo_dir = self.work_dir / "repo_log_placeholder"
+        repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+
+        script_path = str(bin_path)
+
+        # Commit 1: No prompts recorded
+        f1 = repo_dir / "file1.txt"
+        f1.write_text("file1 content")
+        subprocess.run(["git", "add", "file1.txt"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "chore: unprompted commit"], cwd=repo_dir, check=True)
+
+        # Commit 2: With prompt note
+        f2 = repo_dir / "file2.txt"
+        f2.write_text("file2 content")
+        subprocess.run(["git", "add", "file2.txt"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: prompted commit"], cwd=repo_dir, check=True)
+        subprocess.run(
+            ["python3", script_path, "record", "-m", "Steering prompt for commit 2", "-c", "HEAD"],
+            cwd=repo_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        res_log = subprocess.run(
+            ["python3", script_path, "log", "--no-pager"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        self.assertIn("feat: prompted commit", res_log.stdout)
+        self.assertIn("Steering prompt for commit 2", res_log.stdout)
+        self.assertIn("chore: unprompted commit", res_log.stdout)
+        self.assertIn("no prompts recorded", res_log.stdout)
+
+        # Check structure: unprompted commit has placeholder right below it
+        lines = res_log.stdout.splitlines()
+        found_unprompted = False
+        found_placeholder = False
+        for i, line in enumerate(lines):
+            if "chore: unprompted commit" in line:
+                found_unprompted = True
+                self.assertEqual(lines[i + 1].strip(), "no prompts recorded")
+                found_placeholder = True
+                break
+        self.assertTrue(found_unprompted)
+        self.assertTrue(found_placeholder)
+
 
 if __name__ == "__main__":
     unittest.main()
