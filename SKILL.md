@@ -83,8 +83,12 @@ git prompt-log record --drop-last 1
 # Record a prompt manually without transcript (human or external script)
 git prompt-log record -m "Implemented authentication pipeline"
 
+# Attach prompt to a specific past commit (e.g. migrating old logs)
+git prompt-log record --commit <hash> -m "Prompt from legacy log" --harness "Tool" --model "Model"
+
 # Pipe prompt from standard input
 echo "Refactor caching layer" | git prompt-log record --stdin
+cat prompt.txt | git prompt-log record --commit <hash> --stdin --harness "Tool"
 
 # Record with explicit harness and model attribution
 git prompt-log record -m "System architecture design" --harness "Human Dev" --model "Manual"

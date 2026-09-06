@@ -228,14 +228,18 @@ git prompt-log harness clear
 
 ### Manual Prompt Recording (Human or Scripted)
 
-For commits authored manually by humans or piped from external scripts:
+For commits authored manually by humans, migrating historical logs, or piped from external scripts:
 
 ```bash
 # Record prompt manually on HEAD
 git prompt-log record -m "Implement OAuth authentication flow"
 
+# Attach prompt to a specific past commit (e.g. migrating old logs)
+git prompt-log record --commit <hash> -m "Prompt from old log" --harness "Tool" --model "Model"
+
 # Pipe prompt via standard input
 echo "Refactor database query batching" | git prompt-log record --stdin
+cat prompt.txt | git prompt-log record --commit <hash> --stdin --harness "Tool"
 
 # Specify custom harness and model metadata
 git prompt-log record -m "Initial schema proposal" --harness "Human" --model "Manual"
