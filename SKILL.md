@@ -66,9 +66,9 @@ git prompt-log import-log prompts/YYYY_MM_DD_HHMMSS_<slug>.md
 This matches landed commits by commit hash or commit subject and attaches the prompt provenance back to `refs/notes/commits`.
 
 ### Manual Recording & Filtering
-If the user asks to record prompts manually or filter out specific turns:
+If the user asks to record prompts manually (e.g. after committing changes themselves rather than having the assistant commit) or filter out specific turns:
 ```bash
-# Record current session prompts onto HEAD
+# Record current assistant session prompts onto HEAD (e.g. after manual commit)
 git prompt-log record
 
 # Preview without writing to git notes
