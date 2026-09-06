@@ -52,11 +52,12 @@ Now that the hooks are installed, see automated prompt tracking in action:
    ```
    Notice that the newly created commit automatically carries the exact steering prompt you gave your assistant!
 
-> **Prefer to commit yourself?** You can also have the assistant make changes without committing, author the commit yourself, and attach the session prompts afterward:
-> ```bash
-> git commit -m "refactor: clean up helper functions"
-> git prompt-log record
-> ```
+If you make commits manually instead of letting the assistant commit, attach the session prompts afterward with `git prompot-log record`:
+
+```bash
+git commit -m "refactor: clean up helper functions"
+git prompt-log record
+```
 
 ### The Day-to-Day Workflow
 
