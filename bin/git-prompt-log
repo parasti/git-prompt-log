@@ -12,6 +12,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1877,6 +1878,29 @@ def cmd_log(args: argparse.Namespace) -> int:
     return 0
 
 
+def get_export_command(args: argparse.Namespace) -> str:
+    """Reconstructs the CLI invocation command used to generate the export."""
+    for i, arg in enumerate(sys.argv):
+        if arg in ("export", "export-log"):
+            cmd_args = sys.argv[i + 1 :]
+            return shlex.join(["git", "prompt-log", "export"] + cmd_args)
+
+    parts = ["git", "prompt-log", "export"]
+    if getattr(args, "range", None):
+        parts.extend(["--range", args.range])
+    if getattr(args, "output", None):
+        parts.extend(["--output", str(args.output)])
+    if getattr(args, "slug", None):
+        parts.extend(["--slug", args.slug])
+    if getattr(args, "ref", None) and args.ref != DEFAULT_NOTES_REF:
+        parts.extend(["--ref", args.ref])
+    if getattr(args, "stdout", False):
+        parts.append("--stdout")
+    if getattr(args, "commit", False):
+        parts.append("--commit")
+    return shlex.join(parts)
+
+
 def cmd_export_log(args: argparse.Namespace) -> int:
     """
     Exports prompt notes from a commit range to a human-readable Markdown log file
@@ -1924,11 +1948,37 @@ def cmd_export_log(args: argparse.Namespace) -> int:
     ts_file = now_utc.strftime("%Y_%m_%d_%H%M%S")
     ts_human = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
 
+    # Determine out_path for file export and import command
+    if getattr(args, "stdout", False):
+        out_path = None
+        import_cmd = "git prompt-log import <file>"
+    else:
+        if args.output:
+            out_path = Path(args.output)
+            if not out_path.is_absolute():
+                out_path = repo_root / out_path
+        else:
+            out_path = repo_root / "prompts" / f"{ts_file}_{slug}.md"
+        resolved_out = out_path.resolve()
+        resolved_repo = repo_root.resolve()
+        if resolved_out.is_relative_to(resolved_repo):
+            rel_path = resolved_out.relative_to(resolved_repo)
+        else:
+            rel_path = out_path
+        import_cmd = f"git prompt-log import {rel_path}"
+
+    if ref != DEFAULT_NOTES_REF:
+        import_cmd += f" --ref {ref}"
+
+    export_cmd = get_export_command(args)
+
     # Generate Markdown content
     lines = []
-    lines.append(f"# Prompt Log: {slug.replace('_', ' ').title()}")
+    lines.append("# Prompt Log")
     lines.append("")
     lines.append(f"- **Exported:** {ts_human}")
+    lines.append(f"- **Export command:** `{export_cmd}`")
+    lines.append(f"- **Import command:** `{import_cmd}`")
     for s in merged_sessions:
         lines.append("")
         lines.append(f"- **Session:** `{s.session_id}`")
@@ -1956,6 +2006,8 @@ def cmd_export_log(args: argparse.Namespace) -> int:
     envelope = {
         "version": 1,
         "exported_at": ts_human,
+        "export_command": export_cmd,
+        "import_command": import_cmd,
         "slug": slug,
         "commits": [
             {
@@ -1974,19 +2026,15 @@ def cmd_export_log(args: argparse.Namespace) -> int:
     md_content = "\n".join(lines)
 
     if getattr(args, "stdout", False):
-        sys.stdout.write(md_content)
+        try:
+            sys.stdout.write(md_content)
+        except BrokenPipeError:
+            pass
         return 0
 
-    if args.output:
-        out_path = Path(args.output)
-        if not out_path.is_absolute():
-            out_path = repo_root / out_path
-    else:
-        out_path = repo_root / "prompts" / f"{ts_file}_{slug}.md"
-
+    assert out_path is not None
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(md_content, encoding="utf-8")
-    rel_path = out_path.relative_to(repo_root) if out_path.is_relative_to(repo_root) else out_path
     print(f"Exported prompt log to {rel_path}")
 
     if getattr(args, "commit", False):

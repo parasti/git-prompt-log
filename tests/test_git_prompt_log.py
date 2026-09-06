@@ -471,12 +471,25 @@ class TestExportAndImportLog(unittest.TestCase):
             capture_output=True,
             text=True,
         )
-        self.assertEqual(res.returncode, 0)
         self.assertTrue(out_file.exists())
         log_content = out_file.read_text(encoding="utf-8")
-        self.assertIn("# Prompt Log", log_content)
+        self.assertTrue(log_content.startswith("# Prompt Log\n\n- **Exported:** "))
+        self.assertIn("- **Export command:** `git prompt-log export --output", log_content)
+        self.assertIn("- **Import command:** `git prompt-log import prompts/test_export.md`", log_content)
         self.assertIn("Build feature one", log_content)
         self.assertIn("<!-- git-prompt-log:metadata", log_content)
+
+        # Test export to stdout format
+        res_stdout = subprocess.run(
+            ["python3", str(script_path), "export", "--stdout", "--range", "HEAD"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_stdout.returncode, 0)
+        self.assertTrue(res_stdout.stdout.startswith("# Prompt Log\n\n- **Exported:** "))
+        self.assertIn("- **Export command:** `git prompt-log export --stdout --range HEAD`", res_stdout.stdout)
+        self.assertIn("- **Import command:** `git prompt-log import <file>`", res_stdout.stdout)
 
         # Remove note
         subprocess.run(["git", "notes", "remove", sha], cwd=self.repo_dir, check=True, capture_output=True)
