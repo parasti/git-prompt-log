@@ -492,7 +492,7 @@ class TestExportAndImportLog(unittest.TestCase):
         out_file = self.repo_dir / "prompts" / "test_export.md"
         script_path = Path(gpn.__file__).resolve()
         res = subprocess.run(
-            ["python3", str(script_path), "export-log", "--output", str(out_file), "--range", "HEAD~1..HEAD"],
+            ["python3", str(script_path), "export", "--output", str(out_file), "--range", "HEAD~1..HEAD"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -510,7 +510,7 @@ class TestExportAndImportLog(unittest.TestCase):
 
         # Import log back
         res_import = subprocess.run(
-            ["python3", str(script_path), "import-log", str(out_file)],
+            ["python3", str(script_path), "import", str(out_file)],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -558,7 +558,7 @@ class TestExportAndImportLog(unittest.TestCase):
         out_file.write_text(legacy_log, encoding="utf-8")
         script_path = Path(gpn.__file__).resolve()
         res_import = subprocess.run(
-            ["python3", str(script_path), "import-log", str(out_file)],
+            ["python3", str(script_path), "import", str(out_file)],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -584,7 +584,7 @@ class TestExportAndImportLog(unittest.TestCase):
         out_file = self.repo_dir / "prompts" / "feature.md"
         script_path = Path(gpn.__file__).resolve()
         subprocess.run(
-            ["python3", str(script_path), "export-log", "--output", str(out_file)],
+            ["python3", str(script_path), "export", "--output", str(out_file)],
             cwd=self.repo_dir,
             check=True,
             capture_output=True,
@@ -601,7 +601,7 @@ class TestExportAndImportLog(unittest.TestCase):
 
         # Import log should reconcile sha_squashed by subject match
         res_import = subprocess.run(
-            ["python3", str(script_path), "import-log", str(out_file)],
+            ["python3", str(script_path), "import", str(out_file)],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -638,7 +638,7 @@ class TestExportAndImportLog(unittest.TestCase):
         out_file = self.repo_dir / "prompts" / "multi_session_export.md"
         script_path = Path(gpn.__file__).resolve()
         res = subprocess.run(
-            ["python3", str(script_path), "export-log", "--output", str(out_file), "--range", "HEAD~2..HEAD"],
+            ["python3", str(script_path), "export", "--output", str(out_file), "--range", "HEAD~2..HEAD"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -652,6 +652,46 @@ class TestExportAndImportLog(unittest.TestCase):
             "- **Session:** `session-beta-2222`"
         )
         self.assertIn(expected_separator, content)
+
+    def test_export_import_aliases_backward_compat(self):
+        sha = self._commit("file_alias.txt", "alias", "feat: Alias Feature")
+        note = gpn.SessionNote(
+            session_id="session-alias-1",
+            harness="Antigravity CLI 1.1.25",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:00:00 UTC",
+            prompts=[gpn.PromptEntry("2026-09-04 00:59:00", "Test aliases")],
+        )
+        gpn.write_note_content(sha, note.format(), repo_root=self.repo_dir)
+
+        out_file = self.repo_dir / "prompts" / "test_alias.md"
+        script_path = Path(gpn.__file__).resolve()
+        res_export = subprocess.run(
+            ["python3", str(script_path), "export-log", "--output", str(out_file), "--range", "HEAD~1..HEAD"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_export.returncode, 0)
+        self.assertTrue(out_file.exists())
+
+        # Remove note and re-import using import-log alias
+        subprocess.run(["git", "notes", "remove", sha], cwd=self.repo_dir, check=True, capture_output=True)
+        self.assertIsNone(gpn.get_note_content(sha, repo_root=self.repo_dir))
+
+        res_import = subprocess.run(
+            ["python3", str(script_path), "import-log", str(out_file)],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_import.returncode, 0)
+        restored = gpn.get_note_content(sha, repo_root=self.repo_dir)
+        self.assertIsNotNone(restored)
+        notes = gpn.parse_notes(restored)
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0].prompts[0].text, "Test aliases")
+
 
 
 class TestPromptExclusionAndRetraction(unittest.TestCase):

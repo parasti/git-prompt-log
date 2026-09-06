@@ -2156,7 +2156,7 @@ Traditional prompt tracking either pollutes the git tree with markdown files (`p
 1. **Prompts over Transcripts:** Only the human steering prompts that set the course are stored; the patch itself already contains the code.
 2. **Zero Tree Pollution:** Git notes live in `refs/notes/commits` outside the commit DAG during active development.
 3. **Deterministic Rewrites:** Intelligent post-rewrite handling preserves, deduplicates, and merges session notes across `git rebase -i`, `squash`, `fixup`, and `commit --amend`.
-4. **Hybrid PR Workflow:** At the PR boundary, accumulated notes on the branch can be exported to a single reviewable markdown commit (`git prompt-log export-log --commit`), and re-hydrated back into upstream notes upon landing (`git prompt-log import-log <file>`).
+4. **Hybrid PR Workflow:** At the PR boundary, accumulated notes on the branch can be exported to a single reviewable markdown commit (`git prompt-log export --commit`), and re-hydrated back into upstream notes upon landing (`git prompt-log import <file>`).
 ---
 
 ## Schema
@@ -2215,7 +2215,7 @@ When a feature branch is complete and ready for pull request review, export the 
 
 ```bash
 # Automatically detects branch range (e.g. main..HEAD), writes prompts/YYYY_MM_DD_<slug>.md, and commits it
-git prompt-log export-log --commit
+git prompt-log export --commit
 ```
 
 The exported file contains:
@@ -2226,7 +2226,7 @@ The exported file contains:
 After a PR is merged (even if squashed or rebased via GitHub's web UI), the maintainer re-hydrates the notes onto the landed commits on `main`:
 
 ```bash
-git prompt-log import-log prompts/2026_09_04_feature.md
+git prompt-log import prompts/2026_09_04_feature.md
 ```
 
 ---
@@ -2296,10 +2296,10 @@ git prompt-log show [commit]
 git prompt-log edit [commit]
 
 # Export branch prompt notes to a markdown log file
-git prompt-log export-log [--range <base>..HEAD] [--output <file>] [--commit]
+git prompt-log export [--range <base>..HEAD] [--output <file>] [--commit]
 
 # Import prompt notes from a log file into git notes
-git prompt-log import-log <file> [--commit <hash>]
+git prompt-log import <file> [--commit <hash>]
 ```
 
 ---
@@ -2650,9 +2650,12 @@ def main():
     p_deinit.add_argument("--post-commit-only", action="store_true", help="Only uninstall post-commit hook")
     p_deinit.add_argument("--post-rewrite-only", action="store_true", help="Only uninstall post-rewrite hook")
 
-    # export-log
+    # export
     p_export = subparsers.add_parser(
-        "export-log", help="Export prompt notes across branch commits to a markdown log", parents=[base_parser]
+        "export",
+        aliases=["export-log"],
+        help="Export prompt notes across branch commits to a markdown log",
+        parents=[base_parser],
     )
     p_export.add_argument("--range", "-r", help="Commit range (default: detected branch range, e.g. main..HEAD)")
     p_export.add_argument("--output", "-o", help="Target output filepath (default: prompts/YYYY_MM_DD_HHMMSS_<slug>.md)")
@@ -2660,9 +2663,12 @@ def main():
     p_export.add_argument("--commit", action="store_true", help="Stage and commit the exported markdown log file")
     p_export.add_argument("--stdout", action="store_true", help="Print log to stdout instead of writing to a file")
 
-    # import-log
+    # import
     p_import = subparsers.add_parser(
-        "import-log", help="Import prompt notes from an exported markdown log file into git notes", parents=[base_parser]
+        "import",
+        aliases=["import-log"],
+        help="Import prompt notes from an exported markdown log file into git notes",
+        parents=[base_parser],
     )
     p_import.add_argument("file", help="Path to exported prompt log markdown file")
     p_import.add_argument("--commit", "-c", help="Attach to a specific target commit instead of resolving from log")
@@ -2705,9 +2711,9 @@ def main():
         sys.exit(cmd_show(args))
     elif args.command in ("log", None):
         sys.exit(cmd_log(args))
-    elif args.command == "export-log":
+    elif args.command in ("export", "export-log"):
         sys.exit(cmd_export_log(args))
-    elif args.command == "import-log":
+    elif args.command in ("import", "import-log"):
         sys.exit(cmd_import_log(args))
     else:
         parser.print_help()

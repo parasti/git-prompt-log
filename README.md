@@ -27,7 +27,7 @@ cd git-prompt-log
 git prompt-log init
 
 # 2. Import past prompt notes:
-git prompt-log import-log prompts/git-prompt-log.md
+git prompt-log import prompts/git-prompt-log.md
 
 # 3. View the commit history with prompt timelines in rich color:
 git prompt-log
@@ -52,7 +52,7 @@ Now that the hooks are installed, see automated prompt tracking in action:
    ```
    Notice that the newly created commit automatically carries the exact steering prompt you gave your assistant!
 
-If you make commits manually instead of letting the assistant commit, attach the session prompts afterward with `git prompot-log record`:
+If you make commits manually instead of letting the assistant commit, attach the session prompts afterward with `git prompt-log record`:
 
 ```bash
 git commit -m "refactor: clean up helper functions"
@@ -80,13 +80,13 @@ Git notes are not pushed or fetched by default during standard `git push` or Git
 
 1. **Export for PR Review:** Before opening a PR, package the accumulated prompt notes into a Markdown log on your branch:
    ```bash
-   git prompt-log export-log --commit
+   git prompt-log export --commit
    ```
    This writes `prompts/YYYY_MM_DD_HHMMSS_<slug>.md` and commits it to your branch, giving reviewers full visibility into your prompt history alongside code diffs.
 
 2. **Re-hydrate on Merge (Maintainer):** When the PR merges into `main` (even if squashed or rebased via GitHub's web UI), restore the notes on `main`:
    ```bash
-   git prompt-log import-log prompts/YYYY_MM_DD_HHMMSS_<slug>.md
+   git prompt-log import prompts/YYYY_MM_DD_HHMMSS_<slug>.md
    ```
    The tool matches commits by commit subject or hash and re-attaches prompt provenance into `refs/notes/commits`.
 
@@ -97,7 +97,7 @@ Git notes are ideal for local, non-invasive metadata storage, but pushing `refs/
 1. **Privacy & Preventing Leaks:** Your local `refs/notes/commits` ref is repository-wide. It contains prompt notes for *all* local commits, including unpushed experiments, private feature branches, and sensitive queries you never intended to publish. Pushing the notes ref is an all-or-nothing operation that risks leaking private prompts. Exporting packages only the prompts for the specific branch and PR you intend to share.
 2. **PR Workflow Friction:** Pushing notes alongside branches is painful. You have to push both the branch and the notes ref (`git push origin my-branch refs/notes/*`), pull request interfaces have no concept of dual-ref submissions, and concurrent note pushes by teammates cause non-fast-forward rejections that require tedious `git notes merge` steps. With export, prompt history is just a standard file in your branch—one ordinary `git push` handles everything.
 3. **Invisibility:** Git notes are completely invisible in GitHub, GitLab, and Bitbucket pull request diffs and web interfaces. Reviewers cannot see the prompts that generated the code or leave comments on them. An exported Markdown file in `prompts/` lives directly in the PR diff alongside the code.
-4. **Surviving GitHub Squash & Rebase:** When a pull request is squashed or rebased via GitHub's web UI, GitHub generates brand new commit SHAs on `main`. Remote Git notes attached to your branch commits are left behind and orphaned. Because the exported Markdown log is committed to the repository, maintainers can run `git prompt-log import-log` on `main` to match commits by subject and re-hydrate prompt notes onto the new commits.
+4. **Surviving GitHub Squash & Rebase:** When a pull request is squashed or rebased via GitHub's web UI, GitHub generates brand new commit SHAs on `main`. Remote Git notes attached to your branch commits are left behind and orphaned. Because the exported Markdown log is committed to the repository, maintainers can run `git prompt-log import` on `main` to match commits by subject and re-hydrate prompt notes onto the new commits.
 
 ### Enable in Any Repository
 

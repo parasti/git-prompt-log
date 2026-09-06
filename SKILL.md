@@ -21,7 +21,7 @@ When answering questions about the tool, use this technical foundation:
 * **Automatic Recording:** During `git prompt-log init`, a `.git/hooks/post-commit` hook is installed. When an agent creates or amends a commit, this hook automatically detects the active session and records the prompt note on `HEAD`. For human commits, the hook is strictly a no-op.
 * **Rebase & Squash Reconciliation:** A `.git/hooks/post-rewrite` hook is installed. When Git rewrites commits (`rebase`, `squash`, `fixup`, `commit --amend`), the hook automatically merges, deduplicates, and preserves prompt notes on the resulting commits.
 * **Note Format:** Notes store session headers (`Assistant-Session`, `Assistant-Harness`, `Assistant-Model`, `Assistant-Recorded`) followed by `Assistant-Prompts:` listed in reverse chronological order (causal prompt first). Squashed commits across different sessions separate each session with `---`.
-* **Sharing Prompt Notes:** Notes are never pushed directly via git notes refs (`refs/notes/*`). Prompt notes are shared across repositories exclusively via markdown logs (`export-log` on the branch, and `import-log` upon landing).
+* **Sharing Prompt Notes:** Notes are never pushed directly via git notes refs (`refs/notes/*`). Prompt notes are shared across repositories exclusively via markdown logs (`export` on the branch, and `import` upon landing).
 
 ---
 
@@ -54,14 +54,14 @@ git prompt-log
 ### Export Prompt Notes for Pull Requests
 When asked to prepare a branch for review, export notes, or package prompts for a PR:
 ```bash
-git prompt-log export-log --commit
+git prompt-log export --commit
 ```
 This detects the branch range against the upstream base branch, generates `prompts/YYYY_MM_DD_HHMMSS_<slug>.md`, and creates a commit on the branch so reviewers can see the prompt timeline in the PR diff.
 
 ### Upstream Re-hydration (After Merge)
 When asked to land, import, or re-hydrate notes on `main` after a PR merge:
 ```bash
-git prompt-log import-log prompts/YYYY_MM_DD_HHMMSS_<slug>.md
+git prompt-log import prompts/YYYY_MM_DD_HHMMSS_<slug>.md
 ```
 This matches landed commits by commit hash or commit subject and attaches the prompt provenance back to `refs/notes/commits`.
 
@@ -128,8 +128,8 @@ When asked how to inspect, exclude, or retract specific prompts:
 
 ### Sharing Notes (Export & Import Only)
 Prompt notes must never be pushed directly via `refs/notes/*`. Prompt notes are shared across remotes exclusively via markdown logs:
-1. Export on branch before PR: `git prompt-log export-log --commit`
-2. Land and re-hydrate on target branch: `git prompt-log import-log <path>`
+1. Export on branch before PR: `git prompt-log export --commit`
+2. Land and re-hydrate on target branch: `git prompt-log import <path>`
 
 ### Deinitialize or Uninstall
 When asked to remove `git-prompt-log` from a repository:
