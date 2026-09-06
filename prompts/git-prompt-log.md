@@ -1,6 +1,6 @@
-# Prompt Log: Feat Export Log Separate Sessions In Exported Markdown Header With Paragraph Breaks
+# Prompt Log: Feat Ingestion Capture Interactive Tool Responses As Tool Name Prompts
 
-- **Exported:** 2026-09-05 00:04:06 UTC
+- **Exported:** 2026-09-06 08:16:32 UTC
 
 - **Session:** `9674eda6-390f-4b1d-9910-72bec1843401`
 - **Harness:** Antigravity CLI 1.1.25
@@ -12,6 +12,10 @@
 
 - **Session:** `264ec0fe-9040-412b-abe3-06d2c06305c3`
 - **Harness:** Antigravity CLI 1.1.26
+- **Model:** Gemini 3.8 Flash (High)
+
+- **Session:** `78c737d3-be77-4257-b9dd-eda5d27b0d17`
+- **Harness:** Antigravity CLI 1.1.27
 - **Model:** Gemini 3.8 Flash (High)
 
 ## Commits
@@ -59,6 +63,12 @@
 - `ecd9fa51` docs: integrate per-commit drop caveats naturally into explanatory prose
 - `aba281e3` feat(cli): rename uninstall-hook to deinit with uninstall alias and add install as init alias
 - `293d7155` feat(export-log): separate sessions in exported markdown header with paragraph breaks
+- `18bb585b` feat(cli): default plain git prompt-log to log subcommand
+- `672c12f3` feat(log): show placeholder when commit has no prompts
+- `81d625e5` docs: add example for committing manually and recording prompts later
+- `f7915b6b` feat(cli): rename export-log and import-log to export and import
+- `438537bb` refactor(cli): remove DEFAULT_SKILL_MD and init --skill flag in favor of global skills
+- `99b5e061` feat(ingestion): capture interactive tool responses as [tool:<name>] prompts
 
 ## Steering Prompts
 
@@ -445,11 +455,73 @@
 
 > Exported file header lumps separate sessions into one list - add a paragraph break between them
 
+### Session `78c737d3` (Gemini 3.8 Flash (High))
+
+#### [2026-09-05 18:20:54 UTC]
+
+> Update tool so plain `git prompt-log` behaves effectively as if `git prompt-log log` had been invoked.
+
+#### [2026-09-06 05:10:43 UTC]
+
+> Update readme and skill.md to reflect this new behavior: in examples, prefer the shorter version.
+
+#### [2026-09-06 05:25:22 UTC]
+
+> Update the log subcommand to show a placeholder when the commit has no prompt notes "no prompts recorded"
+
+#### [2026-09-06 05:40:33 UTC]
+
+> Add an example that demonstrates that you can also not have the agent commit, but commit yourself and record prompts later with git prompt-log record. Commit this change.
+
+#### [2026-09-06 05:44:24 UTC]
+
+> Trim it down, it's not the most important example - more like a sidenote.
+
+#### [2026-09-06 05:50:22 UTC]
+
+> Less like marketing, more like a sidenote example.
+
+#### [2026-09-06 05:57:42 UTC]
+
+> Evaluate benefits/drawbacks of writing to the commits ref vs having a dedicated notes ref for prompt logs
+
+#### [2026-09-06 06:07:00 UTC]
+
+> Rename import-log and export-log to shorter "import" and "export" and update docs/scripts to match. Commit your changes.
+
+#### [2026-09-06 06:15:28 UTC]
+
+> Does DEFAULT_SKILL_MD match the actual current version of the skill
+
+#### [2026-09-06 06:16:51 UTC]
+
+> Okay, my gut says remove it or embed at install time, to avoid desync issues.
+
+#### [2026-09-06 06:21:53 UTC]
+
+> [tool:ask_question] Remove DEFAULT_SKILL_MD and the --skill flag from init entirely (rely exclusively on global skills)
+
+#### [2026-09-06 06:27:56 UTC]
+
+> Nice. While doing this I realized that you gave me a multiple choice and I picked an answer, and this is not recorded in the prompt log. Wonder if we can represent this in a standard way, it does represent a substantial user-made decision.
+
+#### [2026-09-06 06:58:33 UTC]
+
+> Given it's a tool call input, maybe let's figure out a format that works for arbitrary forms of this. Not interpreting what the thing is (e.g., calling tool "ask_question" response a "choice" is interpretation)
+
+#### [2026-09-06 07:03:22 UTC]
+
+> The question I don't care about, but the user responses I do care about. In claude there are tools that even enable you to type in free form responses to tool calls.
+
+#### [2026-09-06 07:04:18 UTC]
+
+> Yes, candidate 1 is good.
+
 <!-- git-prompt-log:metadata
 {
   "version": 1,
-  "exported_at": "2026-09-05 00:04:06 UTC",
-  "slug": "feat_export_log_separate_sessions_in_exported_markdown_header_with_paragraph_breaks",
+  "exported_at": "2026-09-06 08:16:32 UTC",
+  "slug": "feat_ingestion_capture_interactive_tool_responses_as_tool_name_prompts",
   "commits": [
     {
       "hash": "73e9d0a8b951b2b13f9cdef66819679d0c36bbdd",
@@ -665,6 +737,36 @@
       "hash": "293d715590cf668bad6a5badf5721880a1ffa684",
       "subject": "feat(export-log): separate sessions in exported markdown header with paragraph breaks",
       "note": "Assistant-Session: 264ec0fe-9040-412b-abe3-06d2c06305c3\nAssistant-Harness: Antigravity CLI 1.1.26\nAssistant-Model: Gemini 3.8 Flash (High)\nAssistant-Recorded: 2026-09-04 23:35:25 UTC\n\nAssistant-Prompts:\n  [2026-09-04 23:33:28 UTC] Exported file header lumps separate sessions into one list - add a paragraph break between them\n  [2026-09-04 23:29:47 UTC] Ok, use deinit with uninstall as alias. Likewise, add install as init alias.\n  [2026-09-04 23:26:42 UTC] Is the opposite of init really uninstall-hook still?\n  [2026-09-04 23:23:32 UTC] Oof, I meant integrate it into the prose, not paste verbatim.\n  [2026-09-04 23:22:04 UTC] Add a caveat to the record --drop examples that the prompt will come back on subsequent commits from the same session if edited away in this way.\n  [2026-09-04 23:20:28 UTC] Don't mention the removed things in the readme/skill. \"Rather than injecting prefix tags\" -> this makes no sense unles you know the previous code had that. Just write from a point of what is there instead of what isn't there.\n  [2026-09-04 23:09:00 UTC] Remove prompt prefix support from everywhere, I'm very concerned they are bound to affect LLM output. We'll pivot to \"git prompt-log session\" being the primary means of prompt exclusion/retraction. Likewise for the prompt-log.exclude support - remove that entirely as well.\n  [2026-09-04 23:06:16 UTC] Remove the entire motivation section\n  [2026-09-04 23:02:14 UTC] Or did init have to run first - I missed that it was already mentioned.\n  [2026-09-04 23:01:33 UTC] Continue the quickstart with init subcommand and asking your agent to make a commit and then looking at the log again.\n  [2026-09-04 22:59:41 UTC] Keep the parenthesized note to just a linked \"(and should not be)\"\n  [2026-09-04 22:58:19 UTC] My reasons for import/export vs pushing the notes ref are multiple: 1) notes ref may contain information you don't want to publish, prompts on private branches, etc 2) hard to integrate with a PR workflow (need to push both the notes and the branch, it's just hell honestly), 3) invisible\n  [2026-09-04 22:54:56 UTC] \"are not cloned by default\" -> and should not be, prompt logs are shared via import/export, maybe add a parenthesized note there and an internal link to a section that explains why (if you don't know why, let me know)\n  [2026-09-04 22:52:15 UTC] Let's drop mention of `git prompt-log show` from the readme in favor of `git prompt-log log` because it has colors and UI. I'd like the workflow to first describe the actual workflow - which is most people will never need to use the \"record\" subcommand themselves. I think the \"enable in a repository\" section could in fact work with the git-prompt-log repo and import its logs and have the user inspect those prompts via git prompt-log log - to demonstrate that we are using our own medicine.\n  [2026-09-04 22:43:14 UTC] Do not retain --adapter as an alias; again - we've never deployed. I'm now confused, are we using --agent and harness both now? For consistency, stick to one or the other in public facing texts.\n  [2026-09-04 22:38:34 UTC] \"Ingestion Adapters & Manual Recording\" -> humans reading a README will have no idea what this is, edit to say \"Supported Agents\" and generally remove any mention of pluggable adapters (nobody can plug them, it's internal architecture)\n  [2026-09-04 22:34:49 UTC] I got confused trying to figure out the difference between init and install subcommands.\n  [2026-09-04 22:29:40 UTC] adapters/harness commands serve basically the same purpose - remove adapters subcommand and integrate it into the harness subcommand\n  [2026-09-04 22:27:50 UTC] \"with automatic fallback to prompt-log.adapter\" -> remove the fallback, this has never been deployed\n  [2026-09-04 22:24:23 UTC] Let's use consistent terminology: rename prompt-log.adapter to prompt-log.harness, likewise for the env var.\n  [2026-09-04 22:20:02 UTC] Walking the process tree and looking at open file descriptors is kind of insane. I would rather the user explicitly told us in some very simple way which harness they are using.\n  [2026-09-04 22:13:41 UTC] I just ran `git prompt-log adapters` from inside agy and it still shows all adapters as inactive and active harness as none.\n  [2026-09-04 22:12:27 UTC] Remove dot from the exclusion file stored in a session dir to facilitate discovery.\n  [2026-09-04 22:10:37 UTC] Rename direct adapter to manual everywhere.\n  [2026-09-04 22:08:37 UTC] Drop Aider.\n  [2026-09-04 22:07:12 UTC] I have never used Aider and unsure what the direct prompt recording is for. Reasons to keep?\n  [2026-09-04 21:57:00 UTC] Build the ingestion adapter scaffolding.\n  [2026-09-04 21:55:13 UTC] Would you say the tool as a whole is very Antigravity specific?\n  [2026-09-04 21:53:42 UTC] How doe the command know the active session when run outside an agent process?\n  [2026-09-04 21:51:07 UTC] Where are these choices saved?\n  [2026-09-04 21:43:02 UTC] Hmm, so my options are: 1) remember to add a prompt prefix to following prompots, 2) preemptively filter it out with an exclude regex, 3) rewrite notes after the fact. There is no option that matches what I want, which is to mark a specific prompt from a specific session from not being included - other than retroactively editing the raw transcript to add a prefix.\n  [2026-09-04 21:32:05 UTC] Possible to mark a prompt as always-skip if I missed the chance to add a prompt prefix? I'd like to always skip the \"Commit\" prompt\n  [2026-09-04 21:30:18 UTC] How did commit 24a5f494bd1437987567ae427b38c34347691134 end up with no prompt notes?\n  [2026-09-04 21:24:18 UTC] For the install subcommand, default to no skill and install skill with --skill\n  [2026-09-04 21:22:59 UTC] [skip] Commit unprompted from this point.\n  [2026-09-04 21:06:25 UTC] Rename the entire tool to git-prompt-log / \"git prompt-log\""
+    },
+    {
+      "hash": "18bb585b1cd93964cc91dfdd34eef98ba6516b0d",
+      "subject": "feat(cli): default plain git prompt-log to log subcommand",
+      "note": "Assistant-Session: 78c737d3-be77-4257-b9dd-eda5d27b0d17\nAssistant-Harness: Antigravity CLI 1.1.27\nAssistant-Model: Gemini 3.8 Flash (High)\nAssistant-Recorded: 2026-09-06 05:13:44 UTC\n\nAssistant-Prompts:\n  [2026-09-06 05:10:43 UTC] Update readme and skill.md to reflect this new behavior: in examples, prefer the shorter version.\n  [2026-09-05 18:20:54 UTC] Update tool so plain `git prompt-log` behaves effectively as if `git prompt-log log` had been invoked."
+    },
+    {
+      "hash": "672c12f3e222dbbb044b5e74f4dc29183a0482f7",
+      "subject": "feat(log): show placeholder when commit has no prompts",
+      "note": "Assistant-Session: 78c737d3-be77-4257-b9dd-eda5d27b0d17\nAssistant-Harness: Antigravity CLI 1.1.27\nAssistant-Model: Gemini 3.8 Flash (High)\nAssistant-Recorded: 2026-09-06 05:37:28 UTC\n\nAssistant-Prompts:\n  [2026-09-06 05:25:22 UTC] Update the log subcommand to show a placeholder when the commit has no prompt notes \"no prompts recorded\"\n  [2026-09-06 05:10:43 UTC] Update readme and skill.md to reflect this new behavior: in examples, prefer the shorter version.\n  [2026-09-05 18:20:54 UTC] Update tool so plain `git prompt-log` behaves effectively as if `git prompt-log log` had been invoked."
+    },
+    {
+      "hash": "81d625e564631e401f67f4a9f29c45baa70f7ca1",
+      "subject": "docs: add example for committing manually and recording prompts later",
+      "note": "Assistant-Session: 78c737d3-be77-4257-b9dd-eda5d27b0d17\nAssistant-Harness: Antigravity CLI 1.1.27\nAssistant-Model: Gemini 3.8 Flash (High)\nAssistant-Recorded: 2026-09-06 05:44:45 UTC\n\nAssistant-Prompts:\n  [2026-09-06 05:44:24 UTC] Trim it down, it's not the most important example - more like a sidenote.\n  [2026-09-06 05:40:33 UTC] Add an example that demonstrates that you can also not have the agent commit, but commit yourself and record prompts later with git prompt-log record. Commit this change.\n  [2026-09-06 05:25:22 UTC] Update the log subcommand to show a placeholder when the commit has no prompt notes \"no prompts recorded\"\n  [2026-09-06 05:10:43 UTC] Update readme and skill.md to reflect this new behavior: in examples, prefer the shorter version.\n  [2026-09-05 18:20:54 UTC] Update tool so plain `git prompt-log` behaves effectively as if `git prompt-log log` had been invoked."
+    },
+    {
+      "hash": "f7915b6bf12362f018a188a0f6fc32b23259d65e",
+      "subject": "feat(cli): rename export-log and import-log to export and import",
+      "note": "Assistant-Session: 78c737d3-be77-4257-b9dd-eda5d27b0d17\nAssistant-Harness: Antigravity CLI 1.1.27\nAssistant-Model: Gemini 3.8 Flash (High)\nAssistant-Recorded: 2026-09-06 06:11:47 UTC\n\nAssistant-Prompts:\n  [2026-09-06 06:07:00 UTC] Rename import-log and export-log to shorter \"import\" and \"export\" and update docs/scripts to match. Commit your changes.\n  [2026-09-06 05:57:42 UTC] Evaluate benefits/drawbacks of writing to the commits ref vs having a dedicated notes ref for prompt logs\n  [2026-09-06 05:50:22 UTC] Less like marketing, more like a sidenote example.\n  [2026-09-06 05:44:24 UTC] Trim it down, it's not the most important example - more like a sidenote.\n  [2026-09-06 05:40:33 UTC] Add an example that demonstrates that you can also not have the agent commit, but commit yourself and record prompts later with git prompt-log record. Commit this change.\n  [2026-09-06 05:25:22 UTC] Update the log subcommand to show a placeholder when the commit has no prompt notes \"no prompts recorded\"\n  [2026-09-06 05:10:43 UTC] Update readme and skill.md to reflect this new behavior: in examples, prefer the shorter version.\n  [2026-09-05 18:20:54 UTC] Update tool so plain `git prompt-log` behaves effectively as if `git prompt-log log` had been invoked."
+    },
+    {
+      "hash": "438537bbb41e9f1b5c5f79463ae6107d217c0d39",
+      "subject": "refactor(cli): remove DEFAULT_SKILL_MD and init --skill flag in favor of global skills",
+      "note": "Assistant-Session: 78c737d3-be77-4257-b9dd-eda5d27b0d17\nAssistant-Harness: Antigravity CLI 1.1.27\nAssistant-Model: Gemini 3.8 Flash (High)\nAssistant-Recorded: 2026-09-06 06:24:18 UTC\n\nAssistant-Prompts:\n  [2026-09-06 06:16:51 UTC] Okay, my gut says remove it or embed at install time, to avoid desync issues.\n  [2026-09-06 06:15:28 UTC] Does DEFAULT_SKILL_MD match the actual current version of the skill\n  [2026-09-06 06:07:00 UTC] Rename import-log and export-log to shorter \"import\" and \"export\" and update docs/scripts to match. Commit your changes.\n  [2026-09-06 05:57:42 UTC] Evaluate benefits/drawbacks of writing to the commits ref vs having a dedicated notes ref for prompt logs\n  [2026-09-06 05:50:22 UTC] Less like marketing, more like a sidenote example.\n  [2026-09-06 05:44:24 UTC] Trim it down, it's not the most important example - more like a sidenote.\n  [2026-09-06 05:40:33 UTC] Add an example that demonstrates that you can also not have the agent commit, but commit yourself and record prompts later with git prompt-log record. Commit this change.\n  [2026-09-06 05:25:22 UTC] Update the log subcommand to show a placeholder when the commit has no prompt notes \"no prompts recorded\"\n  [2026-09-06 05:10:43 UTC] Update readme and skill.md to reflect this new behavior: in examples, prefer the shorter version.\n  [2026-09-05 18:20:54 UTC] Update tool so plain `git prompt-log` behaves effectively as if `git prompt-log log` had been invoked."
+    },
+    {
+      "hash": "99b5e06116258bed44cc3b7a95b0a2edfcf70386",
+      "subject": "feat(ingestion): capture interactive tool responses as [tool:<name>] prompts",
+      "note": "Assistant-Session: 78c737d3-be77-4257-b9dd-eda5d27b0d17\nAssistant-Harness: Antigravity CLI 1.1.27\nAssistant-Model: Gemini 3.8 Flash (High)\nAssistant-Recorded: 2026-09-06 08:14:43 UTC\n\nAssistant-Prompts:\n  [2026-09-06 07:04:18 UTC] Yes, candidate 1 is good.\n  [2026-09-06 07:03:22 UTC] The question I don't care about, but the user responses I do care about. In claude there are tools that even enable you to type in free form responses to tool calls.\n  [2026-09-06 06:58:33 UTC] Given it's a tool call input, maybe let's figure out a format that works for arbitrary forms of this. Not interpreting what the thing is (e.g., calling tool \"ask_question\" response a \"choice\" is interpretation)\n  [2026-09-06 06:27:56 UTC] Nice. While doing this I realized that you gave me a multiple choice and I picked an answer, and this is not recorded in the prompt log. Wonder if we can represent this in a standard way, it does represent a substantial user-made decision.\n  [2026-09-06 06:21:53 UTC] [tool:ask_question] Remove DEFAULT_SKILL_MD and the --skill flag from init entirely (rely exclusively on global skills)\n  [2026-09-06 06:16:51 UTC] Okay, my gut says remove it or embed at install time, to avoid desync issues.\n  [2026-09-06 06:15:28 UTC] Does DEFAULT_SKILL_MD match the actual current version of the skill\n  [2026-09-06 06:07:00 UTC] Rename import-log and export-log to shorter \"import\" and \"export\" and update docs/scripts to match. Commit your changes.\n  [2026-09-06 05:57:42 UTC] Evaluate benefits/drawbacks of writing to the commits ref vs having a dedicated notes ref for prompt logs\n  [2026-09-06 05:50:22 UTC] Less like marketing, more like a sidenote example.\n  [2026-09-06 05:44:24 UTC] Trim it down, it's not the most important example - more like a sidenote.\n  [2026-09-06 05:40:33 UTC] Add an example that demonstrates that you can also not have the agent commit, but commit yourself and record prompts later with git prompt-log record. Commit this change.\n  [2026-09-06 05:25:22 UTC] Update the log subcommand to show a placeholder when the commit has no prompt notes \"no prompts recorded\"\n  [2026-09-06 05:10:43 UTC] Update readme and skill.md to reflect this new behavior: in examples, prefer the shorter version.\n  [2026-09-05 18:20:54 UTC] Update tool so plain `git prompt-log` behaves effectively as if `git prompt-log log` had been invoked."
     }
   ]
 }
