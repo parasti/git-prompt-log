@@ -1981,6 +1981,8 @@ def cmd_export_log(args: argparse.Namespace) -> int:
     lines.append(f"- **Import command:** `{import_cmd}`")
     for s in merged_sessions:
         lines.append("")
+        lines.append("---")
+        lines.append("")
         lines.append(f"- **Session:** `{s.session_id}`")
         lines.append(f"- **Harness:** {s.harness}")
         lines.append(f"- **Model:** {s.model}")
@@ -1992,8 +1994,11 @@ def cmd_export_log(args: argparse.Namespace) -> int:
     lines.append("")
     lines.append("## Steering Prompts")
     lines.append("")
-    for s in merged_sessions:
+    for s_idx, s in enumerate(merged_sessions):
         if len(merged_sessions) > 1:
+            if s_idx > 0:
+                lines.append("---")
+                lines.append("")
             lines.append(f"### Session `{s.session_id[:8]}` ({s.model})")
             lines.append("")
         for p in sorted(s.prompts, key=lambda p: parse_timestamp_sort_key(p.timestamp)):

@@ -636,6 +636,7 @@ class TestExportAndImportLog(unittest.TestCase):
         self.assertIn("- **Session:** `session-beta-2222`", content)
         expected_separator = (
             "- **Model:** Gemini 3.8 Flash (High)\n\n"
+            "---\n\n"
             "- **Session:** `session-beta-2222`"
         )
         self.assertIn(expected_separator, content)
