@@ -503,6 +503,9 @@ def find_session_dir(session_id: str) -> Optional[Path]:
 
 def get_session_excludes_file(session_id: str, repo_root: Optional[Path] = None) -> Path:
     """Returns path to the session-specific exclusions JSON file."""
+    s_dir = find_session_dir(session_id)
+    if s_dir and s_dir.exists():
+        return s_dir / "prompt-log-excludes.json"
     brain = get_brain_dir()
     session_dir = brain / session_id
     if session_dir.exists():
@@ -517,8 +520,8 @@ def load_session_excludes(session_id: str, repo_root: Optional[Path] = None) -> 
     """Loads session exclusions: {'patterns': [...], 'indices': [...], 'timestamps': [...]}."""
     fpath = get_session_excludes_file(session_id, repo_root=repo_root)
     if not fpath.exists():
-        brain = get_brain_dir()
-        legacy_path = brain / session_id / ".prompt-log-excludes.json"
+        s_dir = find_session_dir(session_id)
+        legacy_path = (s_dir / ".prompt-log-excludes.json") if s_dir else (get_brain_dir() / session_id / ".prompt-log-excludes.json")
         if legacy_path.exists():
             fpath = legacy_path
     if fpath.exists():
@@ -534,8 +537,8 @@ def save_session_excludes(session_id: str, data: Dict[str, Any], repo_root: Opti
     fpath = get_session_excludes_file(session_id, repo_root=repo_root)
     fpath.parent.mkdir(parents=True, exist_ok=True)
     fpath.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    brain = get_brain_dir()
-    legacy_path = brain / session_id / ".prompt-log-excludes.json"
+    s_dir = find_session_dir(session_id)
+    legacy_path = (s_dir / ".prompt-log-excludes.json") if s_dir else (get_brain_dir() / session_id / ".prompt-log-excludes.json")
     if legacy_path.exists() and legacy_path != fpath:
         try:
             legacy_path.unlink()
@@ -739,19 +742,194 @@ class AntigravityAdapter(BaseIngestionAdapter):
             return "Antigravity VS Code"
         return "Antigravity CLI"
 
-    def is_active(self, repo_root: Optional[Path] = None) -> bool:
-        return bool(os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID"))
+    def _extract_session_paths(self, transcript_path: Path, max_lines: int = 50) -> Set[str]:
+        """
+        Extracts candidate repository / workspace paths from a session transcript.
+        Crucially avoids reading tool outputs (GENERIC / TOOL_RESULT) to avoid false
+        positives from file contents or commands that mention other repositories.
+        """
+        paths: Set[str] = set()
+        if not transcript_path.exists():
+            return paths
 
-    def detect_session_id(self, repo_root: Optional[Path] = None) -> Optional[str]:
-        # 1. Environment variable if available
-        sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
-        if sid:
-            return sid
+        try:
+            with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f):
+                    if i >= max_lines:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        step = json.loads(line)
+                    except Exception:
+                        continue
 
-        # 2. Latest active session in brain matching repository
-        repo = repo_root or get_repo_root()
-        repo_strs = get_repo_identifiers(repo)
-        matching = []
+                    stype = step.get("type", "")
+                    source = step.get("source", "")
+                    content = step.get("content", "")
+
+                    # 1. User prompts & system metadata (USER_INPUT, USER_EXPLICIT, CHECKPOINT)
+                    if stype in ("USER_INPUT", "CHECKPOINT") or source == "USER_EXPLICIT":
+                        # Antigravity CLI system instructions: "[URI] -> [CorpusName]"
+                        for m in re.finditer(r"([/\\][^\s\n\r\"'<>]+)\s*->", content):
+                            paths.add(m.group(1).strip())
+                        # VS Code Antigravity: "Work in directory:", "Active Document:", "Workspace:"
+                        for m in re.finditer(r"(?:Work in directory|Active Document|Workspace):\s*([/\\][^\s\n\r\"'<>]+)", content):
+                            paths.add(m.group(1).strip())
+                        # "Other open documents: - /path/..."
+                        for m in re.finditer(r"-\s*([/\\][^\s\n\r\"'<>]+)", content):
+                            paths.add(m.group(1).strip())
+                        # General absolute path tokens in user request
+                        for m in re.finditer(r"(?:^|[\s\"'<>=:])(/[a-zA-Z0-9_\-\.\/]+)", content):
+                            cand = m.group(1).rstrip(".,:;)")
+                            if "/" in cand[1:]:
+                                paths.add(cand)
+                        for m in re.finditer(r"(?:^|[\s\"'<>=:])([a-zA-Z]:\\[a-zA-Z0-9_\-\.\\]+)", content):
+                            paths.add(m.group(1).rstrip(".,:;)"))
+
+                    # 2. Model planner responses: pre-flight check Workspace & tool call arguments
+                    elif stype == "PLANNER_RESPONSE":
+                        m = re.search(r"Workspace:\s*([^\n\r]+)", content)
+                        if m:
+                            ws = m.group(1).strip().strip("`* ")
+                            if ws.startswith("/") or ws.startswith("\\") or (len(ws) > 2 and ws[1] == ":"):
+                                paths.add(ws)
+
+                        for tc in step.get("tool_calls", []):
+                            args = tc.get("args", {})
+                            for k in ("Cwd", "AbsolutePath", "TargetFile", "SearchDirectory", "SearchPath", "DirectoryPath"):
+                                v = args.get(k)
+                                if v and isinstance(v, str):
+                                    clean_v = v.strip("\"' ")
+                                    if clean_v.startswith("/") or clean_v.startswith("\\") or (len(clean_v) > 2 and clean_v[1] == ":"):
+                                        paths.add(clean_v)
+
+                    # Note: GENERIC / TOOL_RESULT steps are intentionally ignored to prevent
+                    # file contents (e.g. env.txt) or command outputs from polluting paths.
+        except Exception:
+            pass
+
+        return paths
+
+    def _session_match_score(self, session_paths: Set[str], repo_root: Path) -> int:
+        """
+        Calculates match score between extracted session paths and target repository:
+        - 2: Exact worktree / repository match (session directly touches repo_root)
+        - 1: Main repository match (session touches main repo and not a rival worktree)
+        - 0: No match (unrelated repository or rival worktree)
+        """
+        if not session_paths:
+            # If transcript contains no workspace/tool paths at all (e.g. minimal unit test fixtures),
+            # allow it if running in an isolated test environment (ANTIGRAVITY_DATA_DIR set) or
+            # if the session is currently in the active environment (AGY_SESSION_ID / ANTIGRAVITY_CONVERSATION_ID).
+            # Real production agent sessions always contain full workspace/tool paths.
+            if os.environ.get("ANTIGRAVITY_DATA_DIR"):
+                return 1
+            env_sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+            if env_sid:
+                return 1
+            return 0
+
+        target_canon = repo_root.resolve()
+        common_git = get_common_git_dir(target_canon)
+        main_canon = target_canon
+        if common_git and common_git.name == ".git":
+            try:
+                main_canon = common_git.parent.resolve()
+            except Exception:
+                main_canon = target_canon
+
+        # Identify rival worktrees to avoid cross-worktree contamination
+        rival_worktrees: Set[Path] = set()
+        if common_git and common_git.name == ".git":
+            wt_dir = common_git / "worktrees"
+            if wt_dir.exists():
+                for sub in wt_dir.iterdir():
+                    gitdir_f = sub / "gitdir"
+                    if gitdir_f.exists():
+                        try:
+                            rw = Path(gitdir_f.read_text().strip()).parent.resolve()
+                            if rw != target_canon:
+                                rival_worktrees.add(rw)
+                        except Exception:
+                            pass
+        if target_canon.parent.name == ".worktrees":
+            for sibling in target_canon.parent.iterdir():
+                if sibling.is_dir():
+                    s_res = sibling.resolve()
+                    if s_res != target_canon:
+                        rival_worktrees.add(s_res)
+
+        has_exact = False
+        has_main = False
+
+        for p_str in session_paths:
+            try:
+                p = Path(p_str).resolve()
+            except Exception:
+                continue
+
+            # Exact match: p is target_canon or inside target_canon
+            if p == target_canon or target_canon in p.parents:
+                has_exact = True
+                break
+
+            # Main repo match: p is main_canon or inside main_canon
+            if p == main_canon or main_canon in p.parents:
+                is_rival = False
+                for rw in rival_worktrees:
+                    if p == rw or rw in p.parents:
+                        is_rival = True
+                        break
+                if not is_rival:
+                    has_main = True
+
+        if has_exact:
+            return 2
+        if has_main:
+            return 1
+        return 0
+
+    def _session_matches_repo(self, session_id_or_path: Union[str, Path], repo_root: Path) -> bool:
+        """Determines whether a session transcript matches repo_root."""
+        t_path: Optional[Path] = None
+        if isinstance(session_id_or_path, Path):
+            t_path = session_id_or_path
+        elif isinstance(session_id_or_path, str):
+            p = Path(session_id_or_path)
+            if p.exists() and p.is_file():
+                t_path = p
+            else:
+                s_dir = find_session_dir(session_id_or_path)
+                if s_dir:
+                    cand = s_dir / ".system_generated" / "logs" / "transcript.jsonl"
+                    if cand.exists():
+                        t_path = cand
+                if not t_path:
+                    for b in get_brain_dirs():
+                        cand = b / session_id_or_path / ".system_generated" / "logs" / "transcript.jsonl"
+                        if cand.exists():
+                            t_path = cand
+                            break
+
+        if not t_path or not t_path.exists():
+            return False
+
+        paths = self._extract_session_paths(t_path)
+        return self._session_match_score(paths, repo_root) > 0
+
+    def _find_latest_matching_session(
+        self,
+        repo_root: Path,
+        max_age_seconds: Optional[int] = None,
+    ) -> Optional[Tuple[str, Path]]:
+        """
+        Scans candidate brain directories and returns (session_id, transcript_path)
+        for the best matching session ranked by (score, mtime) descending.
+        """
+        now_ts = datetime.datetime.now().timestamp()
+        candidates: List[Tuple[int, float, str, Path]] = []
 
         for brain in get_brain_dirs():
             if not brain.exists():
@@ -765,18 +943,41 @@ class AntigravityAdapter(BaseIngestionAdapter):
 
                 try:
                     mtime = t_path.stat().st_mtime
-                    with open(t_path, "r", encoding="utf-8", errors="replace") as f:
-                        header = "".join([f.readline() for _ in range(25)]).lower()
-                    if any(r in header for r in repo_strs):
-                        matching.append((mtime, cid_dir.name))
+                    if max_age_seconds is not None and (now_ts - mtime) > max_age_seconds:
+                        continue
+
+                    paths = self._extract_session_paths(t_path)
+                    score = self._session_match_score(paths, repo_root)
+                    if score > 0:
+                        candidates.append((score, mtime, cid_dir.name, t_path))
                 except Exception:
                     continue
 
-        if matching:
-            matching.sort(key=lambda x: x[0], reverse=True)
-            return matching[0][1]
+        if not candidates:
+            return None
 
-        return None
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return candidates[0][2], candidates[0][3]
+
+    def is_active(self, repo_root: Optional[Path] = None) -> bool:
+        sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+        if not sid:
+            return False
+        if repo_root is not None:
+            return self._session_matches_repo(sid, repo_root)
+        return True
+
+    def detect_session_id(self, repo_root: Optional[Path] = None) -> Optional[str]:
+        repo = repo_root or get_repo_root()
+        # 1. Environment variable if available and matches repository
+        sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+        if sid:
+            if not repo or self._session_matches_repo(sid, repo):
+                return sid
+
+        # 2. Latest active session in brain matching repository
+        res = self._find_latest_matching_session(repo)
+        return res[0] if res else None
 
     def get_agent_identity(
         self,
@@ -906,53 +1107,37 @@ class AntigravityAdapter(BaseIngestionAdapter):
         extra_options: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         repo = repo_root or get_repo_root()
-        effective_sid = session_id or self.detect_session_id(repo_root=repo)
-        if effective_sid:
+        target_t_path: Optional[Path] = None
+
+        if session_id:
             for brain in get_brain_dirs():
-                t_path = brain / effective_sid / ".system_generated" / "logs" / "transcript.jsonl"
+                t_path = brain / session_id / ".system_generated" / "logs" / "transcript.jsonl"
                 if t_path.exists():
-                    return self.parse_transcript(
-                        t_path,
-                        custom_patterns=custom_patterns,
-                        apply_session_excludes=apply_session_excludes,
-                        repo_root=repo,
-                    )
-            if session_id:
+                    target_t_path = t_path
+                    break
+            if not target_t_path:
                 return None
+        else:
+            # 1. Check environment session if available AND matches repository
+            sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+            if sid and (not repo or self._session_matches_repo(sid, repo)):
+                for brain in get_brain_dirs():
+                    t_path = brain / sid / ".system_generated" / "logs" / "transcript.jsonl"
+                    if t_path.exists():
+                        target_t_path = t_path
+                        break
 
-        # Auto-detect latest active session matching repo across candidate brain dirs
-        repo_strs = get_repo_identifiers(repo)
-        matching = []
-        now_ts = datetime.datetime.now().timestamp()
+            # 2. Find latest active session matching repository across candidate brains
+            if not target_t_path:
+                res = self._find_latest_matching_session(repo, max_age_seconds=max_age_seconds)
+                if res:
+                    target_t_path = res[1]
 
-        for brain in get_brain_dirs():
-            if not brain.exists():
-                continue
-            for cid_dir in brain.iterdir():
-                if not cid_dir.is_dir() or cid_dir.name.startswith("."):
-                    continue
-                t_path = cid_dir / ".system_generated" / "logs" / "transcript.jsonl"
-                if not t_path.exists():
-                    continue
-
-                try:
-                    mtime = t_path.stat().st_mtime
-                    if max_age_seconds is not None and (now_ts - mtime) > max_age_seconds:
-                        continue
-
-                    with open(t_path, "r", encoding="utf-8", errors="replace") as f:
-                        header = "".join([f.readline() for _ in range(15)]).lower()
-                    if any(r in header for r in repo_strs):
-                        matching.append((mtime, t_path))
-                except Exception:
-                    continue
-
-        if not matching:
+        if not target_t_path or not target_t_path.exists():
             return None
 
-        matching.sort(key=lambda x: x[0], reverse=True)
         return self.parse_transcript(
-            matching[0][1],
+            target_t_path,
             custom_patterns=custom_patterns,
             apply_session_excludes=apply_session_excludes,
             repo_root=repo,
@@ -2616,25 +2801,67 @@ def cmd_session(args: argparse.Namespace) -> int:
     action = getattr(args, "action", "list") or "list"
     session_id = getattr(args, "session", None)
 
-    brain = get_brain_dir()
+    t_path = None
     if session_id:
-        t_path = brain / session_id / ".system_generated" / "logs" / "transcript.jsonl"
-        if not t_path.exists():
+        s_dir = find_session_dir(session_id)
+        if s_dir:
+            cand = s_dir / ".system_generated" / "logs" / "transcript.jsonl"
+            if cand.exists():
+                t_path = cand
+        if not t_path:
+            cand = get_brain_dir() / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+            if cand.exists():
+                t_path = cand
+        if not t_path:
             sys.stderr.write(f"Session transcript not found for session ID: {session_id}\n")
             return 1
     else:
         env_sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+        if not env_sid:
+            src_meta = os.environ.get("ANTIGRAVITY_SOURCE_METADATA")
+            if src_meta:
+                try:
+                    meta = json.loads(src_meta)
+                    env_sid = meta.get("tool", {}).get("conversationId")
+                except Exception:
+                    pass
         if env_sid:
-            t_path = brain / env_sid / ".system_generated" / "logs" / "transcript.jsonl"
-            if t_path.exists():
-                session_id = env_sid
-        if not session_id:
+            adapter = REGISTRY.get("antigravity")
+            if isinstance(adapter, AntigravityAdapter) and not adapter._session_matches_repo(env_sid, repo_root):
+                env_sid = None
+        if env_sid:
+            s_dir = find_session_dir(env_sid)
+            if s_dir:
+                cand = s_dir / ".system_generated" / "logs" / "transcript.jsonl"
+                if cand.exists():
+                    session_id = env_sid
+                    t_path = cand
+            if not t_path:
+                for b in get_brain_dirs():
+                    cand = b / env_sid / ".system_generated" / "logs" / "transcript.jsonl"
+                    if cand.exists():
+                        session_id = env_sid
+                        t_path = cand
+                        break
+        if not session_id or not t_path:
             found = find_session_transcript(repo_root=repo_root)
             if not found:
                 sys.stderr.write("No active agent session transcript found.\n")
                 return 1
             session_id = found["session_id"]
-            t_path = brain / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+            s_dir = find_session_dir(session_id)
+            if s_dir:
+                cand = s_dir / ".system_generated" / "logs" / "transcript.jsonl"
+                if cand.exists():
+                    t_path = cand
+            if not t_path:
+                for b in get_brain_dirs():
+                    cand = b / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+                    if cand.exists():
+                        t_path = cand
+                        break
+            if not t_path:
+                t_path = get_brain_dir() / session_id / ".system_generated" / "logs" / "transcript.jsonl"
 
     session_excludes = load_session_excludes(session_id, repo_root=repo_root)
     raw_data = parse_session_transcript(t_path, apply_session_excludes=False, repo_root=repo_root)

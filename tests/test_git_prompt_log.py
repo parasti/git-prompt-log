@@ -2372,6 +2372,132 @@ class TestSessionTimelineWithCommits(unittest.TestCase):
         self.assertIn("feat: second feature step", res.stdout)
 
 
+class TestSessionRepoIsolationAndWorktreeDisambiguation(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.work_dir = Path(self.tmp_dir.name)
+
+        # 1. Setup Repo A
+        self.repo_a = self.work_dir / "repo_a"
+        self.repo_a.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo_a, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.repo_a, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repo_a, check=True)
+        (self.repo_a / "a.txt").write_text("file in repo a")
+        subprocess.run(["git", "add", "."], cwd=self.repo_a, check=True)
+        subprocess.run(["git", "commit", "-m", "chore: init repo a"], cwd=self.repo_a, check=True)
+
+        # 2. Setup Repo B with linked worktree
+        self.repo_b = self.work_dir / "repo_b"
+        self.repo_b.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo_b, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.repo_b, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repo_b, check=True)
+        (self.repo_b / "b.txt").write_text("file in repo b")
+        subprocess.run(["git", "add", "."], cwd=self.repo_b, check=True)
+        subprocess.run(["git", "commit", "-m", "chore: init repo b"], cwd=self.repo_b, check=True)
+
+        self.wt_b = self.repo_b / ".worktrees" / "feature-b"
+        subprocess.run(["git", "worktree", "add", "-b", "feature-b", str(self.wt_b)], cwd=self.repo_b, check=True, capture_output=True)
+
+        self.brain_dir = self.work_dir / "brain"
+        self.brain_dir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def test_repo_a_inspecting_file_with_repo_b_paths_does_not_hijack_repo_b(self):
+        # Session A: inside repo A, but views a file or command whose output contains paths to repo B
+        sid_a = "session-in-repo-a"
+        t_dir_a = self.brain_dir / sid_a / ".system_generated" / "logs"
+        t_dir_a.mkdir(parents=True, exist_ok=True)
+        (t_dir_a / "transcript.jsonl").write_text("\n".join([
+            json.dumps({
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "created_at": "2026-09-07T12:00:00Z",
+                "content": f"<USER_REQUEST>Inspect dump in {self.repo_a}</USER_REQUEST>",
+            }),
+            json.dumps({
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "created_at": "2026-09-07T12:00:01Z",
+                "content": f"`[PRE-FLIGHT CHECK]`\n* **Workspace:** {self.repo_a}\n`[END CHECK]`",
+                "tool_calls": [{
+                    "name": "view_file",
+                    "args": {"AbsolutePath": str(self.repo_a / "env.txt"), "toolAction": "viewing dump", "toolSummary": "view env"}
+                }]
+            }),
+            json.dumps({
+                "step_index": 2,
+                "source": "MODEL",
+                "type": "GENERIC",
+                "created_at": "2026-09-07T12:00:02Z",
+                "content": f"PWD={self.wt_b}\nVSCODE_CWD={self.repo_b}\nfeature-b repo_b neverball",
+            }),
+        ]), encoding="utf-8")
+
+        # Session B: inside repo B worktree
+        sid_b = "session-in-repo-b-worktree"
+        t_dir_b = self.brain_dir / sid_b / ".system_generated" / "logs"
+        t_dir_b.mkdir(parents=True, exist_ok=True)
+        (t_dir_b / "transcript.jsonl").write_text("\n".join([
+            json.dumps({
+                "step_index": 0,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "created_at": "2026-09-07T11:00:00Z", # older timestamp than session A
+                "content": "<USER_REQUEST>Work in worktree</USER_REQUEST>",
+            }),
+            json.dumps({
+                "step_index": 1,
+                "source": "MODEL",
+                "type": "PLANNER_RESPONSE",
+                "created_at": "2026-09-07T11:00:01Z",
+                "content": f"`[PRE-FLIGHT CHECK]`\n* **Workspace:** {self.wt_b}\n`[END CHECK]`",
+                "tool_calls": [{
+                    "name": "run_command",
+                    "args": {"CommandLine": "ls", "Cwd": str(self.wt_b), "toolAction": "listing", "toolSummary": "ls"}
+                }]
+            }),
+        ]), encoding="utf-8")
+
+        orig_get_brain = gpn.get_brain_dir
+        gpn.get_brain_dir = lambda: self.brain_dir
+        adapter = gpn.AntigravityAdapter()
+
+        try:
+            # 1. Querying Repo B worktree must detect session B even though session A is newer and mentions Repo B in tool output
+            detected = adapter.detect_session_id(repo_root=self.wt_b)
+            self.assertEqual(detected, sid_b)
+
+            # 2. Ambient conversation ID of session A must be rejected for Repo B
+            os.environ["ANTIGRAVITY_CONVERSATION_ID"] = sid_a
+            self.assertFalse(adapter.is_active(repo_root=self.wt_b))
+            detected_with_ambient = adapter.detect_session_id(repo_root=self.wt_b)
+            self.assertEqual(detected_with_ambient, sid_b)
+
+            # 3. Ambient conversation ID of session A must be accepted for Repo A
+            self.assertTrue(adapter.is_active(repo_root=self.repo_a))
+            self.assertEqual(adapter.detect_session_id(repo_root=self.repo_a), sid_a)
+
+            # 4. Running git prompt-log session CLI in Repo B worktree resolves to Session B
+            res = subprocess.run(
+                ["python3", str(bin_path), "session"],
+                cwd=self.wt_b,
+                env=dict(os.environ, ANTIGRAVITY_DATA_DIR=str(self.work_dir), ANTIGRAVITY_CONVERSATION_ID=sid_a),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertIn(sid_b, res.stdout)
+            self.assertNotIn(sid_a, res.stdout)
+        finally:
+            gpn.get_brain_dir = orig_get_brain
+            os.environ.pop("ANTIGRAVITY_CONVERSATION_ID", None)
+
 
 if __name__ == "__main__":
     unittest.main()
