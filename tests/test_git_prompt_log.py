@@ -2137,5 +2137,123 @@ class TestRecordRange(unittest.TestCase):
         self.assertIsNone(gpn.get_note_content(c1, repo_root=self.repo_dir))
 
 
+class TestSessionTimelineWithCommits(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.work_dir = Path(self.tmp_dir.name)
+        self.repo_dir = self.work_dir / "repo"
+        self.repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repo_dir, check=True)
+
+        self.session_id = "test-timeline-session-1234"
+        self.brain_dir = self.work_dir / "brain"
+        self.logs_dir = self.brain_dir / self.session_id / ".system_generated" / "logs"
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.transcript_file = self.logs_dir / "transcript.jsonl"
+
+        self.env = os.environ.copy()
+        self.env["PATH"] = f"{bin_path.parent}:{self.env.get('PATH', '')}"
+        self.env["ANTIGRAVITY_DATA_DIR"] = str(self.work_dir)
+        self.env["AGY_SESSION_ID"] = self.session_id
+
+        # Initial commit on main
+        (self.repo_dir / "base.txt").write_text("base")
+        subprocess.run(["git", "add", "base.txt"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "chore: initial base"], cwd=self.repo_dir, env=self.env, check=True)
+
+        # Checkout branch feature
+        subprocess.run(["git", "checkout", "-b", "feature"], cwd=self.repo_dir, check=True, capture_output=True)
+
+        # Commit 1 (no note)
+        (self.repo_dir / "f1.txt").write_text("f1")
+        subprocess.run(["git", "add", "f1.txt"], cwd=self.repo_dir, check=True)
+        c_env = self.env.copy()
+        c_env["GIT_AUTHOR_DATE"] = "2026-09-04T10:00:00Z"
+        c_env["GIT_COMMITTER_DATE"] = "2026-09-04T10:00:00Z"
+        subprocess.run(["git", "commit", "-m", "feat: first feature step"], cwd=self.repo_dir, env=c_env, check=True)
+
+        # Commit 2 (will have note recorded)
+        (self.repo_dir / "f2.txt").write_text("f2")
+        subprocess.run(["git", "add", "f2.txt"], cwd=self.repo_dir, check=True)
+        c_env["GIT_AUTHOR_DATE"] = "2026-09-04T10:10:00Z"
+        c_env["GIT_COMMITTER_DATE"] = "2026-09-04T10:10:00Z"
+        subprocess.run(["git", "commit", "-m", "feat: second feature step"], cwd=self.repo_dir, env=c_env, check=True)
+
+        # Prompts:
+        prompts = [
+            ("First prompt to start feature", "2026-09-04T09:50:00Z"),
+            ("Second prompt to continue feature", "2026-09-04T10:05:00Z"),
+            ("Third prompt to conclude work", "2026-09-04T10:15:00Z"),
+        ]
+        for text, ts in prompts:
+            step = {
+                "type": "USER_INPUT",
+                "source": "USER_EXPLICIT",
+                "content": text,
+                "created_at": ts,
+            }
+            with open(self.transcript_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(step) + "\n")
+
+        # Record note only on Commit 2 (HEAD)
+        subprocess.run(["python3", str(bin_path), "record", "-c", "HEAD", "--until-prompt", "2"], cwd=self.repo_dir, env=self.env, check=True)
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def test_session_timeline_with_explicit_range(self):
+        script_path = str(bin_path)
+        res = subprocess.run(
+            ["python3", script_path, "session", "--commits", "main..feature"],
+            cwd=self.repo_dir,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        out = res.stdout
+        self.assertIn("Session:", out)
+        self.assertIn("main..feature", out)
+
+        # Prompts and commits are interleaved
+        self.assertIn("[1] 2026-09-04 09:50:00 UTC", out)
+        self.assertIn("First prompt to start feature", out)
+        self.assertIn("feat: first feature step", out)
+        self.assertIn("[note: missing]", out)
+
+        self.assertIn("[2] 2026-09-04 10:05:00 UTC", out)
+        self.assertIn("Second prompt to continue feature", out)
+        self.assertIn("feat: second feature step", out)
+        self.assertIn("[note: recorded]", out)
+
+        self.assertIn("[3] 2026-09-04 10:15:00 UTC", out)
+        self.assertIn("Third prompt to conclude work", out)
+
+        # Verify ordering: prompt 1 < commit 1 < prompt 2 < commit 2 < prompt 3
+        pos_p1 = out.find("First prompt to start feature")
+        pos_c1 = out.find("feat: first feature step")
+        pos_p2 = out.find("Second prompt to continue feature")
+        pos_c2 = out.find("feat: second feature step")
+        pos_p3 = out.find("Third prompt to conclude work")
+
+        self.assertTrue(pos_p1 < pos_c1 < pos_p2 < pos_c2 < pos_p3)
+
+    def test_session_timeline_auto_range(self):
+        script_path = str(bin_path)
+        res = subprocess.run(
+            ["python3", script_path, "session", "--commits"],
+            cwd=self.repo_dir,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("Session:", res.stdout)
+        self.assertIn("feat: second feature step", res.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

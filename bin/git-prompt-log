@@ -2387,6 +2387,89 @@ def cmd_import_log(args: argparse.Namespace) -> int:
     return 0 if total_imported > 0 else 1
 
 
+def _show_session_timeline_with_commits(
+    session_id: str,
+    all_prompts: List[PromptEntry],
+    session_excludes: Dict[str, Any],
+    commits_range_spec: str,
+    repo_root: Optional[Path] = None,
+    ref: str = DEFAULT_NOTES_REF,
+) -> int:
+    if repo_root is None:
+        repo_root = get_repo_root()
+
+    if commits_range_spec != "auto" and commits_range_spec:
+        commit_range = commits_range_spec
+    else:
+        commit_range = get_default_branch_range(repo_root)
+
+    code, out, err = run_git(["log", "--format=%H%x00%h%x00%aI%x00%s", "--reverse", commit_range], repo_root=repo_root)
+    commits: List[Dict[str, Any]] = []
+    if code == 0 and out.strip():
+        for line in out.strip().splitlines():
+            parts = line.split("\x00")
+            if len(parts) == 4:
+                full_hash, short_hash, author_iso, subject = parts
+                has_note = bool(get_note_content(full_hash, ref=ref, repo_root=repo_root))
+                author_utc = format_utc(author_iso)
+                commits.append({
+                    "full_hash": full_hash,
+                    "short_hash": short_hash,
+                    "author_date": author_utc,
+                    "sort_ts": parse_timestamp_sort_key(author_utc),
+                    "subject": subject,
+                    "has_note": has_note,
+                })
+
+    pat_list = session_excludes.get("patterns", [])
+    ts_list = set(session_excludes.get("timestamps", []))
+    idx_set = set(session_excludes.get("indices", []))
+
+    items = []
+    for i, p in enumerate(all_prompts, start=1):
+        is_excluded = (
+            i in idx_set
+            or p.timestamp in ts_list
+            or any(_safe_search(pat, p.text) for pat in pat_list)
+        )
+        items.append({
+            "type": "prompt",
+            "index": i,
+            "prompt": p,
+            "is_excluded": is_excluded,
+            "sort_ts": parse_timestamp_sort_key(p.timestamp),
+        })
+
+    for c in commits:
+        items.append({
+            "type": "commit",
+            "commit": c,
+            "sort_ts": c["sort_ts"],
+        })
+
+    items.sort(key=lambda x: (x["sort_ts"], 0 if x["type"] == "prompt" else 1))
+
+    print(f"Session: {session_id} ({len(all_prompts)} prompts) | Range: {commit_range} ({len(commits)} commits)")
+    for item in items:
+        if item["type"] == "prompt":
+            idx = item["index"]
+            p = item["prompt"]
+            status = " [EXCLUDED]" if item["is_excluded"] else ""
+            first_line = p.text.splitlines()[0] if p.text else ""
+            if len(p.text.splitlines()) > 1:
+                first_line += "..."
+            print(f"  [{idx}] {p.timestamp}{status}")
+            print(f"      {first_line}")
+        elif item["type"] == "commit":
+            c = item["commit"]
+            note_status = "note: recorded" if c["has_note"] else "note: missing"
+            print(f"  ---> [commit] {c['short_hash']} {c['author_date']} - {c['subject']} [{note_status}]")
+
+    recorded_count = sum(1 for c in commits if c["has_note"])
+    print(f"\nSummary: {len(all_prompts)} prompts | {len(commits)} commits ({recorded_count} recorded, {len(commits) - recorded_count} missing notes)")
+    return 0
+
+
 def cmd_session(args: argparse.Namespace) -> int:
     """Inspects and manages prompt exclusions for a specific agent session."""
     repo_root = get_repo_root()
@@ -2425,6 +2508,17 @@ def cmd_session(args: argparse.Namespace) -> int:
     idx_set = set(session_excludes.get("indices", []))
 
     if action in ("list", "show"):
+        commits_arg = getattr(args, "commits", None)
+        if commits_arg:
+            return _show_session_timeline_with_commits(
+                session_id=session_id,
+                all_prompts=all_prompts,
+                session_excludes=session_excludes,
+                commits_range_spec=commits_arg,
+                repo_root=repo_root,
+                ref=getattr(args, "ref", DEFAULT_NOTES_REF),
+            )
+
         print(f"Session: {session_id} ({len(all_prompts)} prompts)")
         for i, p in enumerate(all_prompts, start=1):
             is_excluded = (
@@ -2923,6 +3017,13 @@ def main():
     p_session.add_argument("--session", "-s", help="Target session conversation UUID (default: active session)")
     p_session.add_argument("--commit", "-c", default="HEAD", help="Commit to update note on (default: HEAD)")
     p_session.add_argument("--no-update", action="store_true", help="Do not automatically re-record note on commit")
+    p_session.add_argument(
+        "--commits",
+        nargs="?",
+        const="auto",
+        default=None,
+        help="Interleave session prompts and branch commits into a unified timeline (optional range e.g. main..HEAD)",
+    )
 
     args = parser.parse_args()
 

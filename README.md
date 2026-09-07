@@ -174,6 +174,10 @@ You can inspect, exclude, or restore individual prompts from an active assistant
 # List prompts in the active session with 1-based index numbers
 git prompt-log session
 
+# View unified chronological timeline interleaving prompts and branch commits
+git prompt-log session --commits
+git prompt-log session --commits main..HEAD
+
 # Mark a specific prompt turn (e.g. #2) as excluded from this session
 git prompt-log session drop 2
 
