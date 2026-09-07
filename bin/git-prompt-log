@@ -1291,6 +1291,11 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
                 if cleaned:
                     raw_turns.append((format_utc(str(created_at)), f"[tool:{tool_name}] {cleaned}"))
 
+            # Claude Code injects synthetic user turns (skill bodies, session-start hook
+            # context, compact summaries) flagged isMeta=True. These are not user prompts.
+            if item.get("isMeta") is True:
+                continue
+
             role = item.get("role") or item.get("type") or ""
             if role in ("user", "user_input", "human") or (item.get("type") == "message" and item.get("message", {}).get("role") == "user"):
                 text = ""

@@ -1437,6 +1437,29 @@ class TestIngestionAdapters(unittest.TestCase):
         prompts = [p.text for p in parsed["prompts"]]
         self.assertEqual(prompts, ["Build ingestion adapter", "Implement core handler", "Add unit tests"])
 
+    def test_claude_adapter_skips_injected_meta_turns(self):
+        """Claude Code injects synthetic user turns (skill bodies, hook context) flagged
+        isMeta=True. These are not user prompts and must not be recorded."""
+        transcript = self.work_dir / "claude-meta.jsonl"
+        lines = [
+            json.dumps({"type": "user", "message": {"role": "user", "content": "Real typed prompt"},
+                        "promptSource": "typed", "timestamp": "2026-09-07T12:00:00Z"}),
+            # Injected skill text: role=user, list content with a text part, isMeta=True.
+            json.dumps({"type": "user", "isMeta": True, "sourceToolUseID": "toolu_abc",
+                        "message": {"role": "user", "content": [{"type": "text", "text": "Base directory for this skill: /path\n\n# Systematic Debugging\n..."}]},
+                        "timestamp": "2026-09-07T12:00:01Z"}),
+            json.dumps({"type": "user", "message": {"role": "user", "content": "Second real prompt"},
+                        "promptSource": "typed", "timestamp": "2026-09-07T12:00:02Z"}),
+        ]
+        transcript.write_text("\n".join(lines), encoding="utf-8")
+
+        adapter = gpn.ClaudeCodeAdapter()
+        parsed = adapter.parse_transcript_file(transcript)
+        self.assertIsNotNone(parsed)
+        prompts = [p.text for p in parsed["prompts"]]
+        self.assertEqual(prompts, ["Real typed prompt", "Second real prompt"])
+        self.assertFalse(any("Systematic Debugging" in p for p in prompts))
+
     def test_claude_adapter_parsing_json_array(self):
         transcript = self.work_dir / "session.json"
         data = [
