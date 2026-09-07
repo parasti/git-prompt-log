@@ -2130,6 +2130,44 @@ class TestIngestionAdapters(unittest.TestCase):
         claude_adapter = gpn.ClaudeCodeAdapter()
         claude_dirs = claude_adapter._get_claude_dirs(repo_root=wt_dir)
 
+    def test_claude_association_by_cwd_across_worktree(self):
+        import os as _os
+        repo = self.work_dir / "myrepo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+        # Claude filed the transcript in a neutrally-named dir (no "myrepo" in the path),
+        # but the recorded cwd is the repo root.
+        cdir = self.work_dir / "unrelated-project-dir"
+        cdir.mkdir()
+        (cdir / "sess-x.jsonl").write_text("\n".join([
+            json.dumps({"type": "user", "cwd": str(repo),
+                        "message": {"role": "user", "content": "Work in myrepo"},
+                        "promptSource": "typed", "timestamp": "2026-09-07T10:00:00Z"}),
+        ]), encoding="utf-8")
+
+        adapter = gpn.ClaudeCodeAdapter()
+        old = _os.environ.get("CLAUDE_PROJECT_DIR")
+        _os.environ["CLAUDE_PROJECT_DIR"] = str(cdir)
+        try:
+            data = adapter.find_session_data(session_id=None, repo_root=repo)
+        finally:
+            if old is None:
+                _os.environ.pop("CLAUDE_PROJECT_DIR", None)
+            else:
+                _os.environ["CLAUDE_PROJECT_DIR"] = old
+        self.assertIsNotNone(data, "cwd inside repo worktree tree should associate the session")
+        self.assertEqual([p.text for p in data["prompts"]], ["Work in myrepo"])
+
+    def test_claude_identity_fallback_model_is_neutral(self):
+        adapter = gpn.ClaudeCodeAdapter()
+        _, model = adapter.get_agent_identity(detected_model=None)
+        self.assertEqual(model, "Claude")
+
+    def test_module_level_get_agent_identity_removed(self):
+        self.assertFalse(hasattr(gpn, "get_agent_identity"),
+                         "dead module-level get_agent_identity() should be removed")
+
+
 class TestRecordDateOption(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()

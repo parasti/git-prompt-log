@@ -1176,7 +1176,7 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
                 harness = f"Claude Code {out}"
         except Exception:
             pass
-        return harness, detected_model or "Claude 3.7 Sonnet"
+        return harness, detected_model or "Claude"
 
     def _get_claude_dirs(self, repo_root: Optional[Path] = None) -> List[Path]:
         dirs = []
@@ -1201,6 +1201,53 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
                     if main_in_repo.exists():
                         dirs.append(main_in_repo)
         return dirs
+
+    def _get_repo_worktree_paths(self, repo_root: Optional[Path]) -> Set[Path]:
+        """Resolved working-tree paths for the repo: every `git worktree list`
+        entry plus the repo root itself."""
+        paths: Set[Path] = set()
+        if not repo_root:
+            return paths
+        try:
+            paths.add(repo_root.resolve())
+        except Exception:
+            pass
+        code, out, _ = run_git(["worktree", "list", "--porcelain"], repo_root=repo_root)
+        if code == 0 and out:
+            for line in out.splitlines():
+                if line.startswith("worktree "):
+                    try:
+                        paths.add(Path(line[len("worktree "):].strip()).resolve())
+                    except Exception:
+                        continue
+        return paths
+
+    def _transcript_cwd_in_repo(self, fpath: Path, worktree_paths: Set[Path]) -> bool:
+        """True when the transcript's recorded cwd is a worktree path or nested
+        under one. Reads only the first line that carries a cwd."""
+        if not worktree_paths:
+            return False
+        try:
+            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                for _ in range(20):
+                    line = f.readline()
+                    if not line:
+                        break
+                    line = line.strip()
+                    if not line or '"cwd"' not in line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    cwd = obj.get("cwd")
+                    if not cwd:
+                        continue
+                    cpath = Path(cwd).resolve()
+                    return any(cpath == wt or wt in cpath.parents for wt in worktree_paths)
+        except Exception:
+            return False
+        return False
 
     def parse_transcript_file(
         self,
@@ -1373,6 +1420,7 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
         candidates: List[Tuple[float, Path]] = []
         now_ts = datetime.datetime.now().timestamp()
         repo_strs = get_repo_identifiers(repo)
+        worktree_paths = self._get_repo_worktree_paths(repo)
 
         for d in dirs:
             if not d.exists():
@@ -1399,7 +1447,7 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
                     if max_age_seconds is not None and (now_ts - mtime) > max_age_seconds:
                         continue
                     fpath_str = str(fpath).lower()
-                    if any(r in fpath_str for r in repo_strs):
+                    if any(r in fpath_str for r in repo_strs) or self._transcript_cwd_in_repo(fpath, worktree_paths):
                         candidates.append((mtime, fpath))
                 except Exception:
                     continue
@@ -1603,14 +1651,6 @@ REGISTRY = AdapterRegistry()
 REGISTRY.register(AntigravityAdapter())
 REGISTRY.register(ClaudeCodeAdapter())
 REGISTRY.register(ManualAdapter())
-
-
-def get_agent_identity() -> Tuple[str, str]:
-    """Returns (harness_str, default_model_str) for active or default adapter."""
-    adapter = REGISTRY.detect_active_adapter() or REGISTRY.get("antigravity")
-    if adapter:
-        return adapter.get_agent_identity()
-    return "Antigravity CLI", "Gemini 3.8 Flash (High)"
 
 
 def parse_session_transcript(
