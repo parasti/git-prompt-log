@@ -20,14 +20,14 @@ cd git-prompt-log
 
 ### Quickstart: Try It On This Repo
 
-`git-prompt-log` is built and developed using `git-prompt-log`. Since Git notes are not cloned by default ([and should not be](#why-export-and-import-instead-of-pushing-notes)), initialize the repository and import our exported prompt log to inspect the real prompts that built this codebase:
+`git-prompt-log` is built and developed using `git-prompt-log`. Since Git notes are not cloned by default ([and should not be](#why-export-and-import-instead-of-pushing-notes)), initialize the repository and import our exported prompt logs to inspect the real prompts that built this codebase:
 
 ```bash
 # 1. Enable prompt logging in this repo (installs hooks & notes rewrite config):
 git prompt-log init
 
 # 2. Import past prompt notes:
-git prompt-log import prompts/git-prompt-log.md
+git prompt-log import prompts/*.md
 
 # 3. View the commit history with prompt timelines in rich color:
 git prompt-log
@@ -89,11 +89,11 @@ Git notes are not pushed or fetched by default during standard `git push` or Git
 
 2. **Re-hydrate on Merge (Maintainer):** When the PR merges into `main` (even if squashed or rebased via GitHub's web UI), restore the notes on `main`:
    ```bash
-   # Re-hydrate a specific log file:
-   git prompt-log import prompts/YYYY_MM_DD_HHMMSS_<slug>.md
-
-   # Re-hydrate multiple logs (e.g. via shell glob):
+   # Re-hydrate prompt logs (e.g. via shell glob):
    git prompt-log import prompts/*.md
+
+   # Or re-hydrate a specific log file:
+   git prompt-log import prompts/YYYY_MM_DD_HHMMSS_<slug>.md
 
    # Preview imports without modifying git notes:
    git prompt-log import --dry-run prompts/*.md
