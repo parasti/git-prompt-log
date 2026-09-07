@@ -2037,6 +2037,26 @@ class TestRecordPromptIndexOptions(unittest.TestCase):
         self.assertNotEqual(res3.returncode, 0)
         self.assertIn("out of bounds", res3.stderr)
 
+    def test_record_with_keep_last(self):
+        script_path = str(bin_path)
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--keep-last", "2"], cwd=self.repo_dir, env=self.env, check=True)
+        note = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        self.assertNotIn("Prompt number 1", note)
+        self.assertNotIn("Prompt number 2", note)
+        self.assertIn("Prompt number 3", note)
+        self.assertIn("Prompt number 4", note)
+
+    def test_record_keep_last_invalid(self):
+        script_path = str(bin_path)
+        res0 = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--keep-last", "0"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(res0.returncode, 0)
+        self.assertIn("must be a positive integer", res0.stderr)
+
+        res_neg = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--keep-last", "-2"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(res_neg.returncode, 0)
+        self.assertIn("must be a positive integer", res_neg.stderr)
+
+
 
 class TestRecordRange(unittest.TestCase):
     def setUp(self):
@@ -2135,6 +2155,22 @@ class TestRecordRange(unittest.TestCase):
         # In dry run, notes should not be written
         c1 = subprocess.check_output(["git", "rev-parse", "HEAD~1"], cwd=self.repo_dir, text=True).strip()
         self.assertIsNone(gpn.get_note_content(c1, repo_root=self.repo_dir))
+
+    def test_record_range_with_keep_last(self):
+        script_path = str(bin_path)
+        subprocess.run(["python3", script_path, "record", "main..feature", "--keep-last", "1"], cwd=self.repo_dir, env=self.env, check=True)
+
+        # Check commit 1 (HEAD~1): only Prompt 1 was available, so keeping last 1 keeps Prompt 1
+        c1 = subprocess.check_output(["git", "rev-parse", "HEAD~1"], cwd=self.repo_dir, text=True).strip()
+        note1 = gpn.get_note_content(c1, repo_root=self.repo_dir)
+        self.assertIn("Prompt 1 for commit 1", note1)
+
+        # Check commit 2 (HEAD): Prompt 1 and Prompt 2 were available; keeping last 1 retains only Prompt 2
+        c2 = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+        note2 = gpn.get_note_content(c2, repo_root=self.repo_dir)
+        self.assertNotIn("Prompt 1 for commit 1", note2)
+        self.assertIn("Prompt 2 for commit 2", note2)
+
 
 
 class TestSessionTimelineWithCommits(unittest.TestCase):

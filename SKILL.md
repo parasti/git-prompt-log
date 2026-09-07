@@ -96,6 +96,10 @@ git prompt-log record --drop "temporary scratch"
 # Drop the last N prompts before recording
 git prompt-log record --drop-last 1
 
+# Keep only the last N prompts (drop older prompts)
+git prompt-log record --keep-last 3
+git prompt-log record HEAD~4.. --keep-last 3
+
 # Select prompts explicitly by 1-based index or range from `git prompt-log session`
 git prompt-log record --prompts 1-10
 git prompt-log record --until-prompt 10

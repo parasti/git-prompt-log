@@ -1548,6 +1548,12 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
         if getattr(args, "drop_last", 0) and args.drop_last > 0:
             target_prompts = target_prompts[:-args.drop_last]
 
+        if getattr(args, "keep_last", None) is not None:
+            if args.keep_last <= 0:
+                sys.stderr.write("Error: --keep-last must be a positive integer\n")
+                return 1
+            target_prompts = target_prompts[-args.keep_last:]
+
         # Sort reverse-chronologically so causal prompt is at the top
         target_prompts.sort(key=lambda p: parse_timestamp_sort_key(p.timestamp), reverse=True)
 
@@ -1596,6 +1602,15 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
             if not merged[-1].prompts:
                 merged.pop()
 
+    if not session_data and getattr(args, "keep_last", None) is not None:
+        if args.keep_last <= 0:
+            sys.stderr.write("Error: --keep-last must be a positive integer\n")
+            return 1
+        if merged and merged[-1].prompts:
+            merged[-1].prompts = merged[-1].prompts[:args.keep_last]
+            if not merged[-1].prompts:
+                merged.pop()
+
     serialized_prompts = serialize_notes(merged)
     if serialized_prompts:
         final_note = wrap_prompt_block(serialized_prompts, prefix=prefix, suffix=suffix)
@@ -1639,6 +1654,10 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
 
 def cmd_record(args: argparse.Namespace) -> int:
     """Attaches or updates a prompt note on a commit or range of commits."""
+    if getattr(args, "keep_last", None) is not None and args.keep_last <= 0:
+        sys.stderr.write("Error: --keep-last must be a positive integer\n")
+        return 1
+
     repo_root = get_repo_root()
 
     range_target = getattr(args, "range_flag", None)
@@ -2894,6 +2913,11 @@ def main():
         help="Commit date used to filter session prompts (default: author)",
     )
     p_record.add_argument("--drop-last", type=int, default=0, help="Exclude last N prompts")
+    p_record.add_argument(
+        "--keep-last",
+        type=int,
+        help="Keep only the last N prompts (drop older prompts)",
+    )
     p_record.add_argument(
         "--prompts",
         "-p",
