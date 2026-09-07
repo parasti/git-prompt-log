@@ -1503,6 +1503,29 @@ class TestIngestionAdapters(unittest.TestCase):
         self.assertEqual(prompts, ["Real typed prompt", "Second real prompt"])
         self.assertFalse(any("Systematic Debugging" in p for p in prompts))
 
+    def test_claude_adapter_skips_system_injected_prompts(self):
+        """Claude Code injects non-human user turns (e.g. background <task-notification>
+        messages) with promptSource=system. Real input is 'typed' or 'queued'. Only
+        system-injected turns must be dropped."""
+        transcript = self.work_dir / "claude-system.jsonl"
+        lines = [
+            json.dumps({"type": "user", "message": {"role": "user", "content": "Real typed prompt"},
+                        "promptSource": "typed", "timestamp": "2026-09-07T12:00:00Z"}),
+            json.dumps({"type": "user", "message": {"role": "user",
+                        "content": "<task-notification>\n<task-id>abc</task-id>\nAgent finished.\n</task-notification>"},
+                        "promptSource": "system", "timestamp": "2026-09-07T12:00:01Z"}),
+            json.dumps({"type": "user", "message": {"role": "user", "content": "A queued follow-up"},
+                        "promptSource": "queued", "timestamp": "2026-09-07T12:00:02Z"}),
+        ]
+        transcript.write_text("\n".join(lines), encoding="utf-8")
+
+        adapter = gpn.ClaudeCodeAdapter()
+        parsed = adapter.parse_transcript_file(transcript)
+        self.assertIsNotNone(parsed)
+        prompts = [p.text for p in parsed["prompts"]]
+        self.assertEqual(prompts, ["Real typed prompt", "A queued follow-up"])
+        self.assertFalse(any("task-notification" in p for p in prompts))
+
     def test_claude_adapter_parsing_json_array(self):
         transcript = self.work_dir / "session.json"
         data = [

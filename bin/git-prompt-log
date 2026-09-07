@@ -1296,6 +1296,12 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
             if item.get("isMeta") is True:
                 continue
 
+            # System-injected user turns (background <task-notification> messages and
+            # other non-human input) carry promptSource="system"; genuine user input is
+            # "typed" or "queued". Never record system-injected turns as prompts.
+            if item.get("promptSource") == "system":
+                continue
+
             role = item.get("role") or item.get("type") or ""
             if role in ("user", "user_input", "human") or (item.get("type") == "message" and item.get("message", {}).get("role") == "user"):
                 text = ""
