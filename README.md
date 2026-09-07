@@ -57,6 +57,9 @@ If you make commits manually instead of letting the assistant commit, attach the
 ```bash
 git commit -m "refactor: clean up helper functions"
 git prompt-log record
+
+# Or retroactively record across multiple branch commits at once
+git prompt-log record main..HEAD
 ```
 
 ### The Day-to-Day Workflow
@@ -190,6 +193,7 @@ Session exclusions are persisted in `prompt-log-excludes.json` alongside the ses
 
 Prompts can also be filtered or modified retroactively via the CLI:
 
+- `git prompt-log record <range>` or `--range <range>`: Record notes across a commit range (e.g. `main..HEAD`), attributing prompts up to each commit's author date.
 - `git prompt-log record --drop "<pattern>"`: Exclude prompts matching a regex pattern (works on existing notes or new recordings).
 - `git prompt-log record --drop-last <N>`: Drop the last *N* prompts before recording.
 - `git prompt-log record --until-prompt <N>`: Include prompts up to 1-based index *N* (e.g. `--until-prompt 10`).

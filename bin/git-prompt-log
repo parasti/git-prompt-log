@@ -1434,9 +1434,10 @@ def parse_index_spec(spec: str, max_count: int) -> List[int]:
     return sorted(result)
 
 
-def cmd_record(args: argparse.Namespace) -> int:
-    """Attaches or updates a prompt note on a commit."""
-    repo_root = get_repo_root()
+def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = None) -> int:
+    """Attaches or updates a prompt note on a single commit."""
+    if repo_root is None:
+        repo_root = get_repo_root()
     ref = args.ref
 
     # Resolve commit
@@ -1634,6 +1635,47 @@ def cmd_record(args: argparse.Namespace) -> int:
             print(f"Recorded prompt note on {commit_hash[:8]} ({prompt_count} prompts in session {session_id[:8]})")
         return 0
     return 1
+
+
+def cmd_record(args: argparse.Namespace) -> int:
+    """Attaches or updates a prompt note on a commit or range of commits."""
+    repo_root = get_repo_root()
+
+    range_target = getattr(args, "range_flag", None)
+    pos_target = getattr(args, "target", None)
+    commit_target = getattr(args, "commit", None)
+
+    if not range_target and pos_target and ".." in pos_target:
+        range_target = pos_target
+    elif not commit_target and pos_target and ".." not in pos_target:
+        commit_target = pos_target
+
+    if not range_target and commit_target and ".." in commit_target:
+        range_target = commit_target
+
+    if range_target:
+        code, out, err = run_git(["rev-list", "--reverse", range_target], repo_root=repo_root)
+        if code != 0:
+            sys.stderr.write(f"Error resolving revision range '{range_target}': {err}\n")
+            return 1
+        commits = [line.strip() for line in out.splitlines() if line.strip()]
+        if not commits:
+            sys.stderr.write(f"No commits found in revision range '{range_target}'.\n")
+            return 1
+        for chash in commits:
+            c_args = argparse.Namespace(**vars(args))
+            c_args.commit = chash
+            c_args.range_flag = None
+            c_args.target = None
+            ret = _record_single_commit(c_args, repo_root=repo_root)
+            if ret != 0:
+                return ret
+        return 0
+
+    single_args = argparse.Namespace(**vars(args))
+    if commit_target:
+        single_args.commit = commit_target
+    return _record_single_commit(single_args, repo_root=repo_root)
 
 
 def cmd_post_commit(args: argparse.Namespace) -> int:
@@ -2737,7 +2779,9 @@ def main():
     )
 
     # record
-    p_record = subparsers.add_parser("record", help="Attach prompt note to a commit", parents=[base_parser])
+    p_record = subparsers.add_parser("record", help="Attach prompt note to a commit or range of commits", parents=[base_parser])
+    p_record.add_argument("target", nargs="?", default=None, help="Target commit hash or revision range (e.g. master..HEAD)")
+    p_record.add_argument("--range", "-r", dest="range_flag", help="Target commit revision range (e.g. master..HEAD)")
     p_record.add_argument("--commit", "-c", help="Target commit hash or ref (default: HEAD)")
     p_record.add_argument("--session", "-s", help="Explicit session conversation ID UUID")
     p_record.add_argument(

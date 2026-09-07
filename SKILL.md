@@ -85,6 +85,11 @@ git prompt-log record
 # Preview without writing to git notes
 git prompt-log record --dry-run
 
+# Record across an entire branch or revision range in one step (uses author date per commit)
+git prompt-log record main..HEAD
+git prompt-log record --range main..HEAD
+git prompt-log record --dry-run main..HEAD
+
 # Exclude prompts matching a regex pattern
 git prompt-log record --drop "temporary scratch"
 

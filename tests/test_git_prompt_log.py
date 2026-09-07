@@ -2038,5 +2038,104 @@ class TestRecordPromptIndexOptions(unittest.TestCase):
         self.assertIn("out of bounds", res3.stderr)
 
 
+class TestRecordRange(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.work_dir = Path(self.tmp_dir.name)
+        self.repo_dir = self.work_dir / "repo"
+        self.repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repo_dir, check=True)
+
+        self.session_id = "test-range-session-1234"
+        self.brain_dir = self.work_dir / "brain"
+        self.logs_dir = self.brain_dir / self.session_id / ".system_generated" / "logs"
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.transcript_file = self.logs_dir / "transcript.jsonl"
+
+        self.env = os.environ.copy()
+        self.env["PATH"] = f"{bin_path.parent}:{self.env.get('PATH', '')}"
+        self.env["ANTIGRAVITY_DATA_DIR"] = str(self.work_dir)
+        self.env["AGY_SESSION_ID"] = self.session_id
+
+        # Initial commit on main
+        (self.repo_dir / "base.txt").write_text("base")
+        subprocess.run(["git", "add", "base.txt"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "chore: initial base"], cwd=self.repo_dir, env=self.env, check=True)
+
+        # Create branch 'feature'
+        subprocess.run(["git", "checkout", "-b", "feature"], cwd=self.repo_dir, check=True, capture_output=True)
+
+        # Commit 1 on feature: 2026-09-04 10:00:00 UTC
+        (self.repo_dir / "f1.txt").write_text("f1")
+        subprocess.run(["git", "add", "f1.txt"], cwd=self.repo_dir, check=True)
+        c_env = self.env.copy()
+        c_env["GIT_AUTHOR_DATE"] = "2026-09-04T10:00:00Z"
+        c_env["GIT_COMMITTER_DATE"] = "2026-09-04T10:00:00Z"
+        subprocess.run(["git", "commit", "-m", "feat: feature part 1"], cwd=self.repo_dir, env=c_env, check=True)
+
+        # Commit 2 on feature: 2026-09-04 10:10:00 UTC
+        (self.repo_dir / "f2.txt").write_text("f2")
+        subprocess.run(["git", "add", "f2.txt"], cwd=self.repo_dir, check=True)
+        c_env["GIT_AUTHOR_DATE"] = "2026-09-04T10:10:00Z"
+        c_env["GIT_COMMITTER_DATE"] = "2026-09-04T10:10:00Z"
+        subprocess.run(["git", "commit", "-m", "feat: feature part 2"], cwd=self.repo_dir, env=c_env, check=True)
+
+        # Create 3 prompts:
+        # Prompt 1: 09:55:00 (before commit 1)
+        # Prompt 2: 10:05:00 (between commit 1 and commit 2)
+        # Prompt 3: 10:20:00 (after commit 2)
+        prompts = [
+            ("Prompt 1 for commit 1", "2026-09-04T09:55:00Z"),
+            ("Prompt 2 for commit 2", "2026-09-04T10:05:00Z"),
+            ("Prompt 3 after branch work", "2026-09-04T10:20:00Z"),
+        ]
+        for text, ts in prompts:
+            step = {
+                "type": "USER_INPUT",
+                "source": "USER_EXPLICIT",
+                "content": text,
+                "created_at": ts,
+            }
+            with open(self.transcript_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(step) + "\n")
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def test_record_range_flag(self):
+        script_path = str(bin_path)
+        # Record range main..feature with --range
+        res = subprocess.run(["python3", script_path, "record", "--range", "main..feature"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True, check=True)
+        self.assertIn("Recorded prompt note on", res.stdout)
+
+        # Check commit 1 (HEAD~1)
+        c1 = subprocess.check_output(["git", "rev-parse", "HEAD~1"], cwd=self.repo_dir, text=True).strip()
+        note1 = gpn.get_note_content(c1, repo_root=self.repo_dir)
+        self.assertIn("Prompt 1 for commit 1", note1)
+        self.assertNotIn("Prompt 2 for commit 2", note1)
+        self.assertNotIn("Prompt 3 after branch work", note1)
+
+        # Check commit 2 (HEAD)
+        c2 = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+        note2 = gpn.get_note_content(c2, repo_root=self.repo_dir)
+        self.assertIn("Prompt 1 for commit 1", note2)
+        self.assertIn("Prompt 2 for commit 2", note2)
+        self.assertNotIn("Prompt 3 after branch work", note2)
+
+    def test_record_positional_range(self):
+        script_path = str(bin_path)
+        # Record range main..feature as positional argument with --dry-run
+        res = subprocess.run(["python3", script_path, "record", "main..feature", "--dry-run"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True, check=True)
+        self.assertIn("Prompt Note for", res.stdout)
+        self.assertIn("Prompt 1 for commit 1", res.stdout)
+        self.assertIn("Prompt 2 for commit 2", res.stdout)
+
+        # In dry run, notes should not be written
+        c1 = subprocess.check_output(["git", "rev-parse", "HEAD~1"], cwd=self.repo_dir, text=True).strip()
+        self.assertIsNone(gpn.get_note_content(c1, repo_root=self.repo_dir))
+
+
 if __name__ == "__main__":
     unittest.main()
