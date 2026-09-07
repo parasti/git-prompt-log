@@ -1149,6 +1149,12 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
     display_name = "Claude Code"
 
     def is_active(self, repo_root: Optional[Path] = None) -> bool:
+        # Current Claude Code exports CLAUDECODE=1 plus CLAUDE_CODE_* vars.
+        if os.environ.get("CLAUDECODE") == "1":
+            return True
+        if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CLAUDE_CODE_ENTRYPOINT"):
+            return True
+        # Legacy / alternate variable names.
         if os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CLAUDE_CONVERSATION_ID"):
             return True
         if os.environ.get("CLAUDE_PROJECT_DIR"):
@@ -1156,7 +1162,11 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
         return False
 
     def detect_session_id(self, repo_root: Optional[Path] = None) -> Optional[str]:
-        return os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CLAUDE_CONVERSATION_ID")
+        return (
+            os.environ.get("CLAUDE_CODE_SESSION_ID")
+            or os.environ.get("CLAUDE_SESSION_ID")
+            or os.environ.get("CLAUDE_CONVERSATION_ID")
+        )
 
     def get_agent_identity(self, detected_model: Optional[str] = None) -> Tuple[str, str]:
         harness = "Claude Code"

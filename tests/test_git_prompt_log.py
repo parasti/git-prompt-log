@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import importlib.machinery
@@ -18,6 +19,31 @@ from pathlib import Path
 bin_path = Path(__file__).resolve().parent.parent / "bin" / "git-prompt-log"
 gpn = importlib.machinery.SourceFileLoader("git_prompt_log", str(bin_path)).load_module()
 gpl = gpn
+
+
+# The suite may itself be run from inside an assistant harness (Claude Code, Antigravity,
+# ...). Those harnesses export session-identifying env vars (e.g. CLAUDECODE=1,
+# CLAUDE_CODE_SESSION_ID, ANTIGRAVITY_CONVERSATION_ID) that leak into test subprocesses and
+# make adapter detection fire when a test intends a clean, agent-free environment. Scrub them
+# once for the whole run so tests are hermetic; individual tests still set what they need.
+_SCRUBBED_ENV: dict = {}
+
+
+def _is_agent_env_key(key: str) -> bool:
+    if key in ("CLAUDECODE", "PROMPT_LOG_HARNESS", "GIT_PROMPT_LOG_HARNESS"):
+        return True
+    return any(tok in key for tok in ("CLAUDE", "AGY", "ANTIGRAVITY", "AIDER", "GEMINI"))
+
+
+def setUpModule():
+    for key in list(os.environ.keys()):
+        if _is_agent_env_key(key):
+            _SCRUBBED_ENV[key] = os.environ.pop(key)
+
+
+def tearDownModule():
+    os.environ.update(_SCRUBBED_ENV)
+    _SCRUBBED_ENV.clear()
 
 
 class TestNoteParsingAndFormatting(unittest.TestCase):
@@ -1720,6 +1746,52 @@ class TestIngestionAdapters(unittest.TestCase):
         self.assertIn("Assistant-Harness: Claude Code", note)
         self.assertIn("Assistant-Model: claude-3-7-sonnet", note)
         self.assertIn("Refactor auth pipeline", note)
+
+    def test_claude_code_real_environment_variables(self):
+        """Regression: real Claude Code exports CLAUDECODE=1 and CLAUDE_CODE_SESSION_ID,
+        not CLAUDE_SESSION_ID/CLAUDE_CONVERSATION_ID. Detection must recognize them so the
+        post-commit hook records notes instead of silently bailing at the causality guard."""
+        adapter = gpn.ClaudeCodeAdapter()
+        real_env = {"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "sess-real-123"}
+        with mock.patch.dict(os.environ, real_env, clear=True):
+            self.assertTrue(adapter.is_active())
+            self.assertEqual(adapter.detect_session_id(), "sess-real-123")
+            self.assertIsNotNone(gpn.REGISTRY.detect_active_adapter())
+            self.assertEqual(gpn.REGISTRY.detect_active_adapter().name, "claude")
+
+        # End-to-end: a commit made in a real Claude Code environment records a note.
+        repo_dir = self.work_dir / "repo_claude_real"
+        repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+        subprocess.run(["python3", str(bin_path), "init"], cwd=repo_dir, check=True, capture_output=True)
+
+        sid = "sess-real-123"
+        transcript = repo_dir / ".claude" / f"{sid}.jsonl"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text(
+            json.dumps({"role": "user", "content": "Make a test commit", "timestamp": "2026-09-07T18:00:00Z", "model": "claude-opus-4"}) + "\n",
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        for k in list(env.keys()):
+            if "AGY" in k or "ANTIGRAVITY" in k or "CLAUDE" in k or "AIDER" in k:
+                del env[k]
+        env["PATH"] = f"{bin_path.parent}:{env.get('PATH', '')}"
+        env["CLAUDECODE"] = "1"
+        env["CLAUDE_CODE_SESSION_ID"] = sid
+
+        f1 = repo_dir / "file.txt"
+        f1.write_text("content")
+        subprocess.run(["git", "add", "file.txt"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "This is a test."], cwd=repo_dir, env=env, check=True)
+
+        note = gpn.get_note_content("HEAD", repo_root=repo_dir)
+        self.assertIsNotNone(note, "post-commit hook should have recorded a note in a real Claude Code env")
+        self.assertIn("Assistant-Harness: Claude Code", note)
+        self.assertIn("Make a test commit", note)
 
     def test_harness_cli_and_git_config(self):
         repo_dir = self.work_dir / "repo_harness"
