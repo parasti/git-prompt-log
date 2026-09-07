@@ -192,6 +192,7 @@ Prompts can also be filtered or modified retroactively via the CLI:
 
 - `git prompt-log record --drop "<pattern>"`: Exclude prompts matching a regex pattern (works on existing notes or new recordings).
 - `git prompt-log record --drop-last <N>`: Drop the last *N* prompts before recording.
+- `git prompt-log record --date {author,committer}`: Choose which commit date to filter session prompts by (defaults to author date so rebased or amended commits match original prompts).
 - `git prompt-log edit HEAD`: Open the note in `$EDITOR` for manual editing.
 
 Note that modifying a single commit's note this way does not alter the underlying session transcript. Any prompts omitted with `--drop` or removed in an editor will return on subsequent commits made during that same session. To exclude prompts persistently across an entire session, use `git prompt-log session drop` instead.

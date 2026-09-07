@@ -1421,8 +1421,10 @@ def cmd_record(args: argparse.Namespace) -> int:
         return 1
     commit_hash = commit_out
 
-    # Get commit date
-    _, date_out, _ = run_git(["show", "-s", "--format=%cI", commit_hash], repo_root=repo_root)
+    # Get commit date (default to author date so rebased/amended commits match transcript)
+    date_type = getattr(args, "date", "author") or "author"
+    date_fmt = "%cI" if date_type == "committer" else "%aI"
+    _, date_out, _ = run_git(["show", "-s", f"--format={date_fmt}", commit_hash], repo_root=repo_root)
     commit_date_utc = format_utc(date_out)
 
     exclude_patterns: List[str] = []
@@ -2705,6 +2707,12 @@ def main():
     p_record.add_argument("--stdin", action="store_true", help="Read manual prompt text from standard input")
     p_record.add_argument("--model", help="Override model name string in note")
     p_record.add_argument("--exclude", "--drop", help="Exclude prompts matching regex pattern (per-commit only)")
+    p_record.add_argument(
+        "--date",
+        choices=["author", "committer"],
+        default="author",
+        help="Commit date used to filter session prompts (default: author)",
+    )
     p_record.add_argument("--drop-last", type=int, default=0, help="Exclude last N prompts")
     p_record.add_argument("--edit", "-e", action="store_true", help="Edit note in $EDITOR before saving")
     p_record.add_argument("--quiet", "-q", action="store_true", help="Suppress confirmation message")

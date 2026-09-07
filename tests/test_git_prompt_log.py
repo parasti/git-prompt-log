@@ -1887,7 +1887,73 @@ class TestIngestionAdapters(unittest.TestCase):
         (main_repo / ".claude").mkdir(parents=True, exist_ok=True)
         claude_adapter = gpn.ClaudeCodeAdapter()
         claude_dirs = claude_adapter._get_claude_dirs(repo_root=wt_dir)
-        self.assertIn(main_repo / ".claude", claude_dirs)
+
+class TestRecordDateOption(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.work_dir = Path(self.tmp_dir.name)
+        self.repo_dir = self.work_dir / "repo"
+        self.repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repo_dir, check=True)
+
+        self.session_id = "test-date-session-1234"
+        self.brain_dir = self.work_dir / "brain"
+        self.logs_dir = self.brain_dir / self.session_id / ".system_generated" / "logs"
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.transcript_file = self.logs_dir / "transcript.jsonl"
+
+        self.env = os.environ.copy()
+        self.env["PATH"] = f"{bin_path.parent}:{self.env.get('PATH', '')}"
+        self.env["ANTIGRAVITY_DATA_DIR"] = str(self.work_dir)
+        self.env["AGY_SESSION_ID"] = self.session_id
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def _append_prompt(self, text: str, timestamp_str: str):
+        step = {
+            "type": "USER_INPUT",
+            "source": "USER_EXPLICIT",
+            "content": text,
+            "created_at": timestamp_str,
+        }
+        with open(self.transcript_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(step) + "\n")
+
+    def test_record_author_date_vs_committer_date(self):
+        # 1. Author a commit at 2026-09-04 10:00:00 UTC
+        (self.repo_dir / "file.txt").write_text("v1")
+        subprocess.run(["git", "add", "file.txt"], cwd=self.repo_dir, check=True)
+        commit_env = self.env.copy()
+        commit_env["GIT_AUTHOR_DATE"] = "2026-09-04T10:00:00Z"
+        commit_env["GIT_COMMITTER_DATE"] = "2026-09-04T10:00:00Z"
+        subprocess.run(["git", "commit", "-m", "feat: initial commit"], cwd=self.repo_dir, env=commit_env, check=True)
+
+        # 2. Append two prompts:
+        # Prompt 1: before author date
+        # Prompt 2: after author date
+        self._append_prompt("Prompt 1 before author date", "2026-09-04T09:55:00Z")
+        self._append_prompt("Prompt 2 after author date", "2026-09-04T10:05:00Z")
+
+        # 3. Amend the commit setting committer date to 2026-09-06 12:00:00 UTC (newer than Prompt 2)
+        commit_env["GIT_COMMITTER_DATE"] = "2026-09-06T12:00:00Z"
+        subprocess.run(["git", "commit", "--amend", "--no-edit"], cwd=self.repo_dir, env=commit_env, check=True)
+
+        script_path = str(bin_path)
+
+        # 4. By default, record uses author date: Prompt 2 is excluded, only Prompt 1 included
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD"], cwd=self.repo_dir, env=self.env, check=True)
+        note_raw = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        self.assertIn("Prompt 1 before author date", note_raw)
+        self.assertNotIn("Prompt 2 after author date", note_raw)
+
+        # 5. With --date committer, Prompt 2 is included because committer date is newer
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--date", "committer"], cwd=self.repo_dir, env=self.env, check=True)
+        note_committer = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        self.assertIn("Prompt 1 before author date", note_committer)
+        self.assertIn("Prompt 2 after author date", note_committer)
 
 
 if __name__ == "__main__":

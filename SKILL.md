@@ -97,6 +97,10 @@ git prompt-log record -m "Implemented authentication pipeline"
 # Attach prompt to a specific past commit (e.g. migrating old logs)
 git prompt-log record --commit <hash> -m "Prompt from legacy log" --harness "Tool" --model "Model"
 
+# Retroactively record session prompts for a past commit (defaults to author date to match session timeline)
+git prompt-log record --commit <hash>
+git prompt-log record --commit <hash> --date committer
+
 # Pipe prompt from standard input
 echo "Refactor caching layer" | git prompt-log record --stdin
 cat prompt.txt | git prompt-log record --commit <hash> --stdin --harness "Tool"
