@@ -2892,6 +2892,7 @@ def cmd_session(args: argparse.Namespace) -> int:
     session_id = getattr(args, "session", None)
 
     t_path = None
+    raw_data = None
     if session_id:
         s_dir = find_session_dir(session_id)
         if s_dir:
@@ -2934,27 +2935,35 @@ def cmd_session(args: argparse.Namespace) -> int:
                         t_path = cand
                         break
         if not session_id or not t_path:
-            found = find_session_transcript(repo_root=repo_root)
-            if not found:
+            adapter, data = REGISTRY.find_session_data(
+                adapter_name="auto", repo_root=repo_root, apply_session_excludes=False
+            )
+            if not data:
                 sys.stderr.write("No active agent session transcript found.\n")
                 return 1
-            session_id = found["session_id"]
-            s_dir = find_session_dir(session_id)
-            if s_dir:
-                cand = s_dir / ".system_generated" / "logs" / "transcript.jsonl"
-                if cand.exists():
-                    t_path = cand
-            if not t_path:
-                for b in get_brain_dirs():
-                    cand = b / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+            session_id = data.get("session_id") or session_id
+            if adapter and adapter.name == "antigravity":
+                # Antigravity: resolve the on-disk transcript exactly as before.
+                s_dir = find_session_dir(session_id)
+                if s_dir:
+                    cand = s_dir / ".system_generated" / "logs" / "transcript.jsonl"
                     if cand.exists():
                         t_path = cand
-                        break
-            if not t_path:
-                t_path = get_brain_dir() / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+                if not t_path:
+                    for b in get_brain_dirs():
+                        cand = b / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+                        if cand.exists():
+                            t_path = cand
+                            break
+                if not t_path:
+                    t_path = get_brain_dir() / session_id / ".system_generated" / "logs" / "transcript.jsonl"
+            else:
+                # Claude / other harness: use the registry-parsed prompts directly.
+                raw_data = data
 
     session_excludes = load_session_excludes(session_id, repo_root=repo_root)
-    raw_data = parse_session_transcript(t_path, apply_session_excludes=False, repo_root=repo_root)
+    if raw_data is None:
+        raw_data = parse_session_transcript(t_path, apply_session_excludes=False, repo_root=repo_root)
     if not raw_data:
         sys.stderr.write(f"No prompts found in session {session_id}.\n")
         return 1

@@ -2660,5 +2660,70 @@ class TestSessionRepoIsolationAndWorktreeDisambiguation(unittest.TestCase):
             os.environ.pop("ANTIGRAVITY_CONVERSATION_ID", None)
 
 
+class TestClaudeSessionCommand(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name) / "repo"
+        self.repo.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=self.repo, check=True)
+        subprocess.run(["git", "config", "user.email", "t@e.com"], cwd=self.repo, check=True)
+        subprocess.run(["python3", str(bin_path), "init"], cwd=self.repo, check=True, capture_output=True)
+        # Claude transcript filed in repo/.claude/<sid>.jsonl (a dir _get_claude_dirs scans).
+        self.sid = "claude-sess-001"
+        cdir = self.repo / ".claude"
+        cdir.mkdir()
+        (cdir / f"{self.sid}.jsonl").write_text("\n".join([
+            json.dumps({"type": "user", "cwd": str(self.repo),
+                        "message": {"role": "user", "content": "First real prompt"},
+                        "promptSource": "typed", "timestamp": "2026-09-07T10:00:00Z"}),
+            json.dumps({"type": "assistant", "message": {"model": "claude-opus-4-8"}}),
+            json.dumps({"type": "user", "cwd": str(self.repo),
+                        "message": {"role": "user", "content": "Second real prompt"},
+                        "promptSource": "typed", "timestamp": "2026-09-07T10:01:00Z"}),
+        ]), encoding="utf-8")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _run_session(self, extra_env=None):
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_path.parent}:{env.get('PATH', '')}"
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.run(["python3", str(bin_path), "session"],
+                              cwd=self.repo, capture_output=True, text=True, env=env)
+
+    def test_session_lists_claude_prompts_plain_shell(self):
+        res = self._run_session()
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("First real prompt", res.stdout)
+        self.assertIn("Second real prompt", res.stdout)
+
+    def test_session_lists_claude_prompts_with_session_env(self):
+        res = self._run_session({"CLAUDE_CODE_SESSION_ID": self.sid})
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("First real prompt", res.stdout)
+
+    def _run(self, *args, extra_env=None):
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_path.parent}:{env.get('PATH', '')}"
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.run(["python3", str(bin_path), "session", *args],
+                              cwd=self.repo, capture_output=True, text=True, env=env)
+
+    def test_session_drop_and_restore_claude(self):
+        drop = self._run("drop", "1")
+        self.assertEqual(drop.returncode, 0, drop.stderr)
+        listed = self._run()
+        # Prompt 1 now shows as excluded.
+        self.assertIn("[EXCLUDED]", listed.stdout)
+        restore = self._run("restore", "1")
+        self.assertEqual(restore.returncode, 0, restore.stderr)
+        listed2 = self._run()
+        self.assertNotIn("[EXCLUDED]", listed2.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
