@@ -2049,35 +2049,108 @@ def cmd_post_commit(args: argparse.Namespace) -> int:
     return cmd_record(args)
 
 
+# A single logical rewrite can reach the post-rewrite hook as several disjoint
+# calls. `git rebase <base> --exec 'git commit --amend ...'` rewrites each commit
+# twice: git reports the amend as (intermediate -> final) and the rebase as
+# (original -> intermediate) in separate invocations. Neither pair connects the
+# note-bearing original to the final commit, so the note has to be chained through
+# the intermediate SHA. We persist the accumulated old->new edges across calls
+# within one operation to resolve that chain.
+REWRITE_CHAIN_STALE_SECONDS = 3600
+
+
+def _rewrite_chain_file(repo_root: Optional[Path] = None) -> Path:
+    return get_common_git_dir(repo_root) / "prompt-log" / "rewrite-chain.json"
+
+
+def load_rewrite_chain(repo_root: Optional[Path] = None) -> Dict[str, str]:
+    """Loads accumulated old->new rewrite edges, discarding a stale map left by a
+    previous, unrelated operation."""
+    fpath = _rewrite_chain_file(repo_root)
+    try:
+        if not fpath.exists():
+            return {}
+        age = datetime.datetime.now().timestamp() - fpath.stat().st_mtime
+        if age > REWRITE_CHAIN_STALE_SECONDS:
+            return {}
+        data = json.loads(fpath.read_text(encoding="utf-8"))
+        edges = data.get("edges") if isinstance(data, dict) else None
+        return {str(k): str(v) for k, v in edges.items()} if isinstance(edges, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_rewrite_chain(edges: Dict[str, str], repo_root: Optional[Path] = None) -> None:
+    fpath = _rewrite_chain_file(repo_root)
+    try:
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fpath.write_text(json.dumps({"edges": edges}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def clear_rewrite_chain(repo_root: Optional[Path] = None) -> None:
+    try:
+        _rewrite_chain_file(repo_root).unlink()
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+
+def resolve_rewrite_terminal(sha: str, edges: Dict[str, str]) -> str:
+    """Follows old->new edges forward to the terminal (final) SHA."""
+    seen: Set[str] = set()
+    while sha in edges and edges[sha] != sha and sha not in seen:
+        seen.add(sha)
+        sha = edges[sha]
+    return sha
+
+
 def cmd_post_rewrite(args: argparse.Namespace) -> int:
     """
     Called by .git/hooks/post-rewrite on rebase, amend, or squash.
     Reads '<old-sha> <new-sha>' pairs from stdin.
-    Intelligently merges notes from squashed commits according to session semantics.
+    Intelligently merges notes from squashed commits according to session semantics,
+    and chains notes through intermediate SHAs across a multi-step rewrite (e.g.
+    `git rebase --exec 'git commit --amend'`) so the final commit keeps its note.
     """
     repo_root = get_repo_root()
     ref = args.ref
+    rewrite_type = getattr(args, "rewrite_type", None)
 
     lines = sys.stdin.read().strip().splitlines()
     if not lines:
         return 0
 
     rewrites: Dict[str, List[str]] = defaultdict(list)
+    edges = load_rewrite_chain(repo_root)
     for line in lines:
         parts = line.strip().split()
         if len(parts) >= 2:
             old_sha, new_sha = parts[0], parts[1]
             rewrites[new_sha].append(old_sha)
+            edges[old_sha] = new_sha
+    save_rewrite_chain(edges, repo_root=repo_root)
 
     modified_count = 0
     for new_sha, old_shas in rewrites.items():
+        # The note may need to travel past this pair's `new_sha` to the final commit
+        # if `new_sha` was itself rewritten again later in the same operation.
+        target = resolve_rewrite_terminal(new_sha, edges)
+
         all_notes: List[SessionNote] = []
         prefix = ""
         suffix = ""
 
-        # Read notes from all source commits
-        for o_sha in old_shas:
-            raw = get_note_content(o_sha, ref=ref, repo_root=repo_root)
+        # Source notes: the original commit(s), the direct new commit, and (if the
+        # chain resolved further) the final commit, whose note we merge into.
+        source_shas = list(old_shas) + [new_sha]
+        if target not in source_shas:
+            source_shas.append(target)
+
+        for s_sha in source_shas:
+            raw = get_note_content(s_sha, ref=ref, repo_root=repo_root)
             if raw:
                 pre, _, suf = extract_prompt_block(raw)
                 if pre and not prefix:
@@ -2086,24 +2159,20 @@ def cmd_post_rewrite(args: argparse.Namespace) -> int:
                     suffix = suf
                 all_notes.extend(parse_notes(raw))
 
-        # Also check if new_sha already has notes (e.g. from post-commit hook during amend)
-        new_raw = get_note_content(new_sha, ref=ref, repo_root=repo_root)
-        if new_raw:
-            pre, _, suf = extract_prompt_block(new_raw)
-            if pre and not prefix:
-                prefix = pre
-            if suf and not suffix:
-                suffix = suf
-            all_notes.extend(parse_notes(new_raw))
-
         if not all_notes:
             continue
 
         merged = merge_session_notes(all_notes)
         serialized_prompts = serialize_notes(merged)
         final_note = wrap_prompt_block(serialized_prompts, prefix=prefix, suffix=suffix)
-        if write_note_content(new_sha, final_note, ref=ref, repo_root=repo_root):
+        if write_note_content(target, final_note, ref=ref, repo_root=repo_root):
             modified_count += 1
+
+    # Reset the chain once the operation is complete: an explicit "rebase" (finish)
+    # call, or any rewrite that leaves no rebase in progress (e.g. a standalone
+    # amend). Mid-rebase amend calls keep it so later calls can chain through them.
+    if rewrite_type == "rebase" or not is_rebase_in_progress(repo_root):
+        clear_rewrite_chain(repo_root)
 
     if args.verbose and modified_count > 0:
         print(f"git-prompt-log: Updated prompt notes on {modified_count} rewritten commits.")
@@ -3063,7 +3132,9 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     # 1. Install post-rewrite hook (safe automatic merger on squash / rebase / amend)
     post_rewrite_path = hooks_dir / "post-rewrite"
-    post_rewrite_cmd = f'git prompt-log post-rewrite --ref="{args.ref}"'
+    # Forward git's rewrite-type argument ("$1" = amend|rebase) so the merger can
+    # tell when a rebase has finished and reset its rewrite-chain state.
+    post_rewrite_cmd = f'git prompt-log post-rewrite --ref="{args.ref}" "$@"'
     _install_hook_file(post_rewrite_path, post_rewrite_cmd, "Git Prompt Log rebase/squash merger")
 
     # 2. Install post-commit hook by default (strictly requires AGY_SESSION_ID / ANTIGRAVITY_CONVERSATION_ID)
@@ -3329,6 +3400,10 @@ def main():
         "post-rewrite", help="Handle git post-rewrite hook (stdin: <old> <new>)", parents=[base_parser]
     )
     p_rewrite.add_argument("--verbose", "-v", action="store_true", help="Print status messages")
+    p_rewrite.add_argument(
+        "rewrite_type", nargs="?", default=None,
+        help='Git-provided rewrite type ("amend" or "rebase"); forwarded by the hook',
+    )
 
     # show
     p_show = subparsers.add_parser("show", help="Display prompt note on a commit", parents=[base_parser])

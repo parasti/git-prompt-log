@@ -1088,6 +1088,49 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         self.assertEqual(notes[0].prompts[0].text, "Improve performance on feature")
         self.assertEqual(notes[0].prompts[1].text, "Initial commit prompt")
 
+    def test_rebase_exec_amend_preserves_notes(self):
+        # Reproduces losing a prompt note when rewriting authorship with
+        # `git rebase <base> --exec 'git commit --amend --author=...'`.
+        # That double-rewrites each commit (pick -> amend); git reports the two
+        # halves in separate post-rewrite calls, so the note must be chained
+        # through the intermediate SHA to reach the final commit.
+        base_sha = self._commit("base.txt", "base", "chore: Base")
+
+        self._append_prompt("Work one", "2026-09-04T10:00:00Z")
+        sha1 = self._commit("a.txt", "a", "feat: one")
+
+        self._append_prompt("Work two", "2026-09-04T10:05:00Z")
+        sha2 = self._commit("b.txt", "b", "feat: two")
+
+        env = self.env.copy()
+        env["GIT_EDITOR"] = "true"
+        subprocess.run(
+            ["git", "rebase", base_sha, "--exec",
+             'git commit --amend --author="New Author <new@example.com>" --no-edit'],
+            cwd=self.repo_dir, check=True, capture_output=True, env=env,
+        )
+
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True, env=self.env).strip()
+        head_parent = subprocess.check_output(["git", "rev-parse", "HEAD~1"], cwd=self.repo_dir, text=True, env=self.env).strip()
+        self.assertNotEqual(head, sha2)  # authorship rewrite changed the SHA
+
+        # Authorship actually changed (the point of the operation).
+        author = subprocess.check_output(["git", "log", "-1", "--format=%an <%ae>", head], cwd=self.repo_dir, text=True, env=self.env).strip()
+        self.assertEqual(author, "New Author <new@example.com>")
+
+        # The final commit must retain its cumulative prompt note.
+        note_head_raw = gpn.get_note_content(head, repo_root=self.repo_dir)
+        self.assertIsNotNone(note_head_raw, "final rewritten commit lost its prompt note")
+        notes_head = gpn.parse_notes(note_head_raw)
+        texts_head = [p.text for p in notes_head[0].prompts]
+        self.assertIn("Work two", texts_head)
+        self.assertIn("Work one", texts_head)
+
+        # And the earlier rewritten commit keeps its note too.
+        note_parent_raw = gpn.get_note_content(head_parent, repo_root=self.repo_dir)
+        self.assertIsNotNone(note_parent_raw)
+        self.assertIn("Work one", [p.text for p in gpn.parse_notes(note_parent_raw)[0].prompts])
+
     def test_native_git_rebase_squash(self):
         # Base commit
         self._commit("base.txt", "base", "chore: Base commit")
