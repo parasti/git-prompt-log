@@ -1538,6 +1538,87 @@ class TestIngestionAdapters(unittest.TestCase):
         self.assertEqual(len(parsed["prompts"]), 1)
         self.assertEqual(parsed["prompts"][0].text, "Manual steer without transcript file")
 
+    def test_antigravity_vscode_environment_detection(self):
+        adapter = gpn.AntigravityAdapter()
+        old_env = os.environ.copy()
+        try:
+            # When in standard CLI mode
+            for k in ["ANTIGRAVITY_VSCODE_HOST", "ANTIGRAVITY_AUTH_SUCCESS_APP", "VSCODE_PID", "ANTIGRAVITY_LS_VERSION", "ANTIGRAVITY_AGENT", "ANTIGRAVITY_CONVERSATION_ID"]:
+                os.environ.pop(k, None)
+            self.assertFalse(adapter._is_vscode_env())
+            self.assertEqual(adapter.display_name, "Antigravity CLI")
+
+            # When in VS Code mode via ANTIGRAVITY_VSCODE_HOST
+            os.environ["ANTIGRAVITY_VSCODE_HOST"] = "1"
+            os.environ["ANTIGRAVITY_LS_VERSION"] = "cli-2.12.2"
+            self.assertTrue(adapter._is_vscode_env())
+            self.assertEqual(adapter.display_name, "Antigravity VS Code")
+            harness_str, model_str = adapter.get_agent_identity()
+            self.assertEqual(harness_str, "Antigravity VS Code 2.12.2")
+
+            # When in VS Code mode via ANTIGRAVITY_AUTH_SUCCESS_APP
+            os.environ.pop("ANTIGRAVITY_VSCODE_HOST", None)
+            os.environ["ANTIGRAVITY_AUTH_SUCCESS_APP"] = "vscode"
+            self.assertTrue(adapter._is_vscode_env())
+            self.assertEqual(adapter.display_name, "Antigravity VS Code")
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+
+    def test_antigravity_vscode_transcript_parsing_and_identity(self):
+        # Create transcript in directory matching .../antigravity/brain/...
+        transcript_dir = self.work_dir / "antigravity" / "brain" / "sess-vscode-test" / ".system_generated" / "logs"
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        transcript = transcript_dir / "transcript.jsonl"
+        lines = [
+            json.dumps({
+                "step_index": 1,
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "created_at": "2026-09-06T12:00:00Z",
+                "content": "<USER_REQUEST>Convert install.txt to install.md</USER_REQUEST>",
+            }),
+        ]
+        transcript.write_text("\n".join(lines), encoding="utf-8")
+
+        adapter = gpn.AntigravityAdapter()
+        parsed = adapter.parse_transcript(transcript)
+        self.assertIsNotNone(parsed)
+        self.assertIn("Antigravity VS Code", parsed["harness"])
+        self.assertEqual(parsed["session_id"], "sess-vscode-test")
+        self.assertEqual(len(parsed["prompts"]), 1)
+        self.assertEqual(parsed["prompts"][0].text, "Convert install.txt to install.md")
+
+    def test_antigravity_vscode_multi_brain_resolution(self):
+        # Create both a CLI brain and a VS Code brain
+        cli_brain = self.work_dir / "antigravity-cli" / "brain"
+        vscode_brain = self.work_dir / "antigravity" / "brain"
+        cli_brain.mkdir(parents=True, exist_ok=True)
+        vscode_brain.mkdir(parents=True, exist_ok=True)
+
+        # VS Code session
+        sess_dir = vscode_brain / "sess-multi-brain" / ".system_generated" / "logs"
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        t_file = sess_dir / "transcript.jsonl"
+        t_file.write_text(json.dumps({
+            "step_index": 1,
+            "source": "USER_EXPLICIT",
+            "type": "USER_INPUT",
+            "created_at": "2026-09-06T12:00:00Z",
+            "content": "<USER_REQUEST>Neverball markdown conversion</USER_REQUEST>",
+        }) + "\n", encoding="utf-8")
+
+        adapter = gpn.AntigravityAdapter()
+        orig_get_dirs = gpn.get_brain_dirs
+        gpn.get_brain_dirs = lambda: [cli_brain, vscode_brain]
+        try:
+            data = adapter.find_session_data(session_id="sess-multi-brain")
+            self.assertIsNotNone(data)
+            self.assertEqual(data["session_id"], "sess-multi-brain")
+            self.assertEqual(data["prompts"][0].text, "Neverball markdown conversion")
+        finally:
+            gpn.get_brain_dirs = orig_get_dirs
+
     def test_manual_record_cli_and_harness_subcommand(self):
         repo_dir = self.work_dir / "test_repo"
         repo_dir.mkdir()
@@ -2289,6 +2370,7 @@ class TestSessionTimelineWithCommits(unittest.TestCase):
         )
         self.assertIn("Session:", res.stdout)
         self.assertIn("feat: second feature step", res.stdout)
+
 
 
 if __name__ == "__main__":

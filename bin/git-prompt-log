@@ -411,22 +411,94 @@ def _safe_search(pattern: str, text: str) -> bool:
 
 
 def get_brain_dir() -> Path:
-    """Locates the Antigravity / Gemini CLI brain directory."""
+    """Locates the primary Antigravity / Gemini brain directory."""
+    if os.environ.get("ANTIGRAVITY_DATA_DIR"):
+        c = os.environ["ANTIGRAVITY_DATA_DIR"]
+        b_path = Path(c) / "brain"
+        if b_path.exists() and b_path.is_dir():
+            return b_path
+        if Path(c).name == "brain" and Path(c).is_dir():
+            return Path(c)
+        return Path(c) / "brain"
+
+    if os.environ.get("GEMINI_CLI_HOME"):
+        c = os.environ["GEMINI_CLI_HOME"]
+        b_path = Path(c) / "brain"
+        if b_path.exists() and b_path.is_dir():
+            return b_path
+        if Path(c).name == "brain" and Path(c).is_dir():
+            return Path(c)
+        return Path(c) / "brain"
+
+    if os.environ.get("ANTIGRAVITY_VSCODE_HOST") == "1" or os.environ.get("ANTIGRAVITY_AUTH_SUCCESS_APP") == "vscode":
+        candidates = [
+            os.path.expanduser("~/.gemini/antigravity"),
+            os.path.expanduser("~/.config/antigravity"),
+            os.path.expanduser("~/.gemini/antigravity-cli"),
+            os.path.expanduser("~/.config/antigravity-cli"),
+        ]
+    else:
+        candidates = [
+            os.path.expanduser("~/.gemini/antigravity-cli"),
+            os.path.expanduser("~/.config/antigravity-cli"),
+            os.path.expanduser("~/.gemini/antigravity"),
+            os.path.expanduser("~/.config/antigravity"),
+        ]
+    for candidate in candidates:
+        b_path = Path(candidate) / "brain"
+        if b_path.exists() and b_path.is_dir():
+            return b_path
+
+    if os.environ.get("ANTIGRAVITY_VSCODE_HOST") == "1" or os.environ.get("ANTIGRAVITY_AUTH_SUCCESS_APP") == "vscode":
+        return Path(os.path.expanduser("~/.gemini/antigravity/brain"))
+    return Path(os.path.expanduser("~/.gemini/antigravity-cli/brain"))
+
+
+def get_brain_dirs() -> List[Path]:
+    """Returns candidate brain directories that exist, starting with the primary get_brain_dir()."""
+    primary = get_brain_dir()
+    if os.environ.get("ANTIGRAVITY_DATA_DIR") or os.environ.get("GEMINI_CLI_HOME"):
+        return [primary]
+
+    home_gemini = Path(os.path.expanduser("~/.gemini"))
+    home_config = Path(os.path.expanduser("~/.config"))
+    try:
+        is_standard = primary.is_relative_to(home_gemini) or primary.is_relative_to(home_config)
+    except AttributeError:
+        is_standard = str(home_gemini) in str(primary) or str(home_config) in str(primary)
+
+    if not is_standard:
+        return [primary]
+
+    dirs = [primary]
+    seen = {primary.resolve() if primary.exists() else primary}
+
     candidates = [
-        os.environ.get("ANTIGRAVITY_DATA_DIR", ""),
-        os.environ.get("GEMINI_CLI_HOME", ""),
+        os.path.expanduser("~/.gemini/antigravity"),
+        os.path.expanduser("~/.config/antigravity"),
         os.path.expanduser("~/.gemini/antigravity-cli"),
         os.path.expanduser("~/.config/antigravity-cli"),
     ]
     for candidate in candidates:
-        if candidate:
-            b_path = Path(candidate) / "brain"
-            if b_path.exists() and b_path.is_dir():
-                return b_path
-            if Path(candidate).name == "brain" and Path(candidate).is_dir():
-                return Path(candidate)
+        b_path = Path(candidate) / "brain"
+        if b_path.exists() and b_path.is_dir():
+            resolved = b_path.resolve()
+            if resolved not in seen:
+                dirs.append(b_path)
+                seen.add(resolved)
 
-    return Path(os.path.expanduser("~/.gemini/antigravity-cli/brain"))
+    return dirs
+
+
+def find_session_dir(session_id: str) -> Optional[Path]:
+    """Finds the directory containing a specific session across candidate brain directories."""
+    if not session_id:
+        return None
+    for brain in get_brain_dirs():
+        s_dir = brain / session_id
+        if s_dir.exists() and s_dir.is_dir():
+            return s_dir
+    return None
 
 
 def get_session_excludes_file(session_id: str, repo_root: Optional[Path] = None) -> Path:
@@ -647,7 +719,25 @@ class BaseIngestionAdapter(abc.ABC):
 
 class AntigravityAdapter(BaseIngestionAdapter):
     name = "antigravity"
-    display_name = "Antigravity CLI"
+
+    def _is_vscode_env(self) -> bool:
+        if os.environ.get("ANTIGRAVITY_VSCODE_HOST") == "1":
+            return True
+        if os.environ.get("ANTIGRAVITY_AUTH_SUCCESS_APP") == "vscode":
+            return True
+        if os.environ.get("VSCODE_PID") and (
+            os.environ.get("ANTIGRAVITY_AGENT")
+            or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+            or os.environ.get("ANTIGRAVITY_TRAJECTORY_ID")
+        ):
+            return True
+        return False
+
+    @property
+    def display_name(self) -> str:
+        if self._is_vscode_env():
+            return "Antigravity VS Code"
+        return "Antigravity CLI"
 
     def is_active(self, repo_root: Optional[Path] = None) -> bool:
         return bool(os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID"))
@@ -659,29 +749,28 @@ class AntigravityAdapter(BaseIngestionAdapter):
             return sid
 
         # 2. Latest active session in brain matching repository
-        brain = get_brain_dir()
-        if not brain.exists():
-            return None
-
         repo = repo_root or get_repo_root()
         repo_strs = get_repo_identifiers(repo)
         matching = []
 
-        for cid_dir in brain.iterdir():
-            if not cid_dir.is_dir() or cid_dir.name.startswith("."):
+        for brain in get_brain_dirs():
+            if not brain.exists():
                 continue
-            t_path = cid_dir / ".system_generated" / "logs" / "transcript.jsonl"
-            if not t_path.exists():
-                continue
+            for cid_dir in brain.iterdir():
+                if not cid_dir.is_dir() or cid_dir.name.startswith("."):
+                    continue
+                t_path = cid_dir / ".system_generated" / "logs" / "transcript.jsonl"
+                if not t_path.exists():
+                    continue
 
-            try:
-                mtime = t_path.stat().st_mtime
-                with open(t_path, "r", encoding="utf-8", errors="replace") as f:
-                    header = "".join([f.readline() for _ in range(25)]).lower()
-                if any(r in header for r in repo_strs):
-                    matching.append((mtime, cid_dir.name))
-            except Exception:
-                continue
+                try:
+                    mtime = t_path.stat().st_mtime
+                    with open(t_path, "r", encoding="utf-8", errors="replace") as f:
+                        header = "".join([f.readline() for _ in range(25)]).lower()
+                    if any(r in header for r in repo_strs):
+                        matching.append((mtime, cid_dir.name))
+                except Exception:
+                    continue
 
         if matching:
             matching.sort(key=lambda x: x[0], reverse=True)
@@ -689,14 +778,41 @@ class AntigravityAdapter(BaseIngestionAdapter):
 
         return None
 
-    def get_agent_identity(self, detected_model: Optional[str] = None) -> Tuple[str, str]:
+    def get_agent_identity(
+        self,
+        detected_model: Optional[str] = None,
+        is_vscode: Optional[bool] = None,
+    ) -> Tuple[str, str]:
+        use_vscode = self._is_vscode_env() if is_vscode is None else is_vscode
+        if use_vscode:
+            harness = "Antigravity VS Code"
+            ls_ver = os.environ.get("ANTIGRAVITY_LS_VERSION", "").strip()
+            if ls_ver:
+                ver = re.sub(r"^cli-", "", ls_ver).strip()
+                if ver:
+                    harness = f"Antigravity VS Code {ver}"
+            else:
+                try:
+                    exe = os.environ.get("ANTIGRAVITY_AGENTAPI_EXE") or "agy"
+                    out = subprocess.check_output([exe, "--version"], text=True, stderr=subprocess.DEVNULL).strip()
+                    if out:
+                        harness = f"Antigravity VS Code {out}"
+                except Exception:
+                    pass
+            return harness, detected_model or "Gemini 3.8 Flash (High)"
+
         harness = "Antigravity CLI"
+        ls_ver = os.environ.get("ANTIGRAVITY_LS_VERSION", "").strip()
+        ver = re.sub(r"^cli-", "", ls_ver).strip() if ls_ver else ""
         try:
-            out = subprocess.check_output(["agy", "--version"], text=True, stderr=subprocess.DEVNULL).strip()
+            exe = os.environ.get("ANTIGRAVITY_AGENTAPI_EXE") or "agy"
+            out = subprocess.check_output([exe, "--version"], text=True, stderr=subprocess.DEVNULL).strip()
             if out:
-                harness = f"Antigravity CLI {out}"
+                ver = out
         except Exception:
             pass
+        if ver:
+            harness = f"Antigravity CLI {ver}"
         return harness, detected_model or "Gemini 3.8 Flash (High)"
 
     def parse_transcript(
@@ -767,7 +883,12 @@ class AntigravityAdapter(BaseIngestionAdapter):
         if apply_session_excludes:
             prompts = apply_session_excludes_filter(cid, prompts, repo_root=repo_root)
 
-        harness, model = self.get_agent_identity(detected_model)
+        path_str = str(transcript_path).replace("\\", "/")
+        is_vscode = (
+            self._is_vscode_env()
+            or ("/antigravity/brain/" in path_str and "/antigravity-cli/" not in path_str)
+        )
+        harness, model = self.get_agent_identity(detected_model, is_vscode=is_vscode)
         return {
             "session_id": cid,
             "detected_model": detected_model,
@@ -784,47 +905,47 @@ class AntigravityAdapter(BaseIngestionAdapter):
         apply_session_excludes: bool = True,
         extra_options: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
-        brain = get_brain_dir()
-        if not brain.exists():
-            return None
-
         repo = repo_root or get_repo_root()
         effective_sid = session_id or self.detect_session_id(repo_root=repo)
         if effective_sid:
-            t_path = brain / effective_sid / ".system_generated" / "logs" / "transcript.jsonl"
-            if t_path.exists():
-                return self.parse_transcript(
-                    t_path,
-                    custom_patterns=custom_patterns,
-                    apply_session_excludes=apply_session_excludes,
-                    repo_root=repo,
-                )
+            for brain in get_brain_dirs():
+                t_path = brain / effective_sid / ".system_generated" / "logs" / "transcript.jsonl"
+                if t_path.exists():
+                    return self.parse_transcript(
+                        t_path,
+                        custom_patterns=custom_patterns,
+                        apply_session_excludes=apply_session_excludes,
+                        repo_root=repo,
+                    )
             if session_id:
                 return None
 
-        # Auto-detect latest active session matching repo
+        # Auto-detect latest active session matching repo across candidate brain dirs
         repo_strs = get_repo_identifiers(repo)
         matching = []
         now_ts = datetime.datetime.now().timestamp()
 
-        for cid_dir in brain.iterdir():
-            if not cid_dir.is_dir() or cid_dir.name.startswith("."):
+        for brain in get_brain_dirs():
+            if not brain.exists():
                 continue
-            t_path = cid_dir / ".system_generated" / "logs" / "transcript.jsonl"
-            if not t_path.exists():
-                continue
-
-            try:
-                mtime = t_path.stat().st_mtime
-                if max_age_seconds is not None and (now_ts - mtime) > max_age_seconds:
+            for cid_dir in brain.iterdir():
+                if not cid_dir.is_dir() or cid_dir.name.startswith("."):
+                    continue
+                t_path = cid_dir / ".system_generated" / "logs" / "transcript.jsonl"
+                if not t_path.exists():
                     continue
 
-                with open(t_path, "r", encoding="utf-8", errors="replace") as f:
-                    header = "".join([f.readline() for _ in range(15)]).lower()
-                if any(r in header for r in repo_strs):
-                    matching.append((mtime, t_path))
-            except Exception:
-                continue
+                try:
+                    mtime = t_path.stat().st_mtime
+                    if max_age_seconds is not None and (now_ts - mtime) > max_age_seconds:
+                        continue
+
+                    with open(t_path, "r", encoding="utf-8", errors="replace") as f:
+                        header = "".join([f.readline() for _ in range(15)]).lower()
+                    if any(r in header for r in repo_strs):
+                        matching.append((mtime, t_path))
+                except Exception:
+                    continue
 
         if not matching:
             return None

@@ -216,7 +216,7 @@ Note that modifying a single commit's note this way does not alter the underlyin
 
 | Harness | Identifier | Signals & Transcripts |
 | :--- | :--- | :--- |
-| Google Antigravity | `antigravity` | `$AGY_SESSION_ID`, `$ANTIGRAVITY_CONVERSATION_ID`, `brain/` |
+| Google Antigravity | `antigravity` | `$AGY_SESSION_ID`, `$ANTIGRAVITY_CONVERSATION_ID`, `$ANTIGRAVITY_VSCODE_HOST`, CLI & VS Code `brain/` |
 | Claude Code | `claude` | `$CLAUDE_SESSION_ID`, `~/.claude/projects/`, `$CLAUDE_TRANSCRIPT_PATH` |
 | Manual Entry | `manual` | `-m / --message "..."` or `--stdin` |
 
