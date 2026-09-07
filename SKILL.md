@@ -91,6 +91,11 @@ git prompt-log record --drop "temporary scratch"
 # Drop the last N prompts before recording
 git prompt-log record --drop-last 1
 
+# Select prompts explicitly by 1-based index or range from `git prompt-log session`
+git prompt-log record --prompts 1-10
+git prompt-log record --until-prompt 10
+git prompt-log record --commit <hash> -p 1,3,5
+
 # Record a prompt manually without transcript (human or external script)
 git prompt-log record -m "Implemented authentication pipeline"
 

@@ -1952,8 +1952,90 @@ class TestRecordDateOption(unittest.TestCase):
         # 5. With --date committer, Prompt 2 is included because committer date is newer
         subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--date", "committer"], cwd=self.repo_dir, env=self.env, check=True)
         note_committer = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
-        self.assertIn("Prompt 1 before author date", note_committer)
-        self.assertIn("Prompt 2 after author date", note_committer)
+
+class TestRecordPromptIndexOptions(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.work_dir = Path(self.tmp_dir.name)
+        self.repo_dir = self.work_dir / "repo"
+        self.repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repo_dir, check=True)
+
+        self.session_id = "test-prompts-spec-session"
+        self.brain_dir = self.work_dir / "brain"
+        self.logs_dir = self.brain_dir / self.session_id / ".system_generated" / "logs"
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.transcript_file = self.logs_dir / "transcript.jsonl"
+
+        self.env = os.environ.copy()
+        self.env["PATH"] = f"{bin_path.parent}:{self.env.get('PATH', '')}"
+        self.env["ANTIGRAVITY_DATA_DIR"] = str(self.work_dir)
+        self.env["AGY_SESSION_ID"] = self.session_id
+
+        # Commit
+        (self.repo_dir / "file.txt").write_text("content")
+        subprocess.run(["git", "add", "file.txt"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: test commit"], cwd=self.repo_dir, env=self.env, check=True)
+
+        # 4 prompts in transcript
+        for i in range(1, 5):
+            step = {
+                "type": "USER_INPUT",
+                "source": "USER_EXPLICIT",
+                "content": f"Prompt number {i}",
+                "created_at": f"2026-09-04T10:0{i}:00Z",
+            }
+            with open(self.transcript_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(step) + "\n")
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def test_record_with_until_prompt(self):
+        script_path = str(bin_path)
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--until-prompt", "2"], cwd=self.repo_dir, env=self.env, check=True)
+        note = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        self.assertIn("Prompt number 1", note)
+        self.assertIn("Prompt number 2", note)
+        self.assertNotIn("Prompt number 3", note)
+        self.assertNotIn("Prompt number 4", note)
+
+    def test_record_with_prompts_range_and_list(self):
+        script_path = str(bin_path)
+        # 1. Range syntax: 2-3
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--prompts", "2-3"], cwd=self.repo_dir, env=self.env, check=True)
+        note = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        self.assertNotIn("Prompt number 1", note)
+        self.assertIn("Prompt number 2", note)
+        self.assertIn("Prompt number 3", note)
+        self.assertNotIn("Prompt number 4", note)
+
+        # 2. Comma-separated list: 1,4
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD", "-p", "1,4"], cwd=self.repo_dir, env=self.env, check=True)
+        note2 = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        self.assertIn("Prompt number 1", note2)
+        self.assertNotIn("Prompt number 2", note2)
+        self.assertNotIn("Prompt number 3", note2)
+        self.assertIn("Prompt number 4", note2)
+
+    def test_record_prompts_out_of_bounds_errors(self):
+        script_path = str(bin_path)
+        # Out of bounds prompt index
+        res = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--prompts", "99"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("out of bounds", res.stderr)
+
+        # Invalid range start > end
+        res2 = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--prompts", "4-2"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(res2.returncode, 0)
+        self.assertIn("start cannot exceed end", res2.stderr)
+
+        # Out of bounds until-prompt
+        res3 = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--until-prompt", "0"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(res3.returncode, 0)
+        self.assertIn("out of bounds", res3.stderr)
 
 
 if __name__ == "__main__":

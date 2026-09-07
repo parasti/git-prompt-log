@@ -1405,7 +1405,33 @@ def cmd_harness(args: argparse.Namespace) -> int:
     return 0
 
 
-# --- Core Command Implementations ---
+def parse_index_spec(spec: str, max_count: int) -> List[int]:
+    """Parses a 1-based index specification (e.g. '1-3,5', '10') into a sorted list of unique indices."""
+    result = set()
+    parts = [p.strip() for p in spec.split(",") if p.strip()]
+    if not parts:
+        raise ValueError("Empty prompt index specification")
+    for part in parts:
+        if "-" in part:
+            start_str, end_str = part.split("-", 1)
+            if not start_str.strip().isdigit() or not end_str.strip().isdigit():
+                raise ValueError(f"Invalid range format '{part}'")
+            start = int(start_str.strip())
+            end = int(end_str.strip())
+            if start > end:
+                raise ValueError(f"Invalid range '{part}': start cannot exceed end")
+            if start < 1 or end > max_count:
+                raise ValueError(f"Range '{part}' out of bounds (valid: 1-{max_count})")
+            for i in range(start, end + 1):
+                result.add(i)
+        else:
+            if not part.isdigit():
+                raise ValueError(f"Invalid prompt index '{part}'")
+            idx = int(part)
+            if idx < 1 or idx > max_count:
+                raise ValueError(f"Prompt index {idx} out of bounds (valid: 1-{max_count})")
+            result.add(idx)
+    return sorted(result)
 
 
 def cmd_record(args: argparse.Namespace) -> int:
@@ -1481,12 +1507,28 @@ def cmd_record(args: argparse.Namespace) -> int:
         session_id = session_data["session_id"]
         all_prompts: List[PromptEntry] = session_data.get("prompts", [])
 
-        commit_sort_ts = parse_timestamp_sort_key(commit_date_utc)
-        target_prompts = []
+        prompts_spec = getattr(args, "prompts", None)
+        until_prompt = getattr(args, "until_prompt", None)
 
-        if adapter and adapter.name in ("manual", "direct"):
+        if prompts_spec or until_prompt is not None:
+            if until_prompt is not None:
+                if until_prompt < 1 or until_prompt > len(all_prompts):
+                    sys.stderr.write(f"Error: --until-prompt {until_prompt} out of bounds (1-{len(all_prompts)})\n")
+                    return 1
+                selected_indices = list(range(1, until_prompt + 1))
+            else:
+                try:
+                    selected_indices = parse_index_spec(prompts_spec, len(all_prompts))
+                except ValueError as e:
+                    sys.stderr.write(f"Error: {e}\n")
+                    return 1
+
+            target_prompts = [all_prompts[i - 1] for i in selected_indices]
+        elif adapter and adapter.name in ("manual", "direct"):
             target_prompts = list(all_prompts)
         else:
+            commit_sort_ts = parse_timestamp_sort_key(commit_date_utc)
+            target_prompts = []
             for p in all_prompts:
                 pts = parse_timestamp_sort_key(p.timestamp)
                 if pts <= commit_sort_ts:
@@ -2714,6 +2756,16 @@ def main():
         help="Commit date used to filter session prompts (default: author)",
     )
     p_record.add_argument("--drop-last", type=int, default=0, help="Exclude last N prompts")
+    p_record.add_argument(
+        "--prompts",
+        "-p",
+        help="Select specific prompts by 1-based index or range (e.g. '1-10', '1,3,5')",
+    )
+    p_record.add_argument(
+        "--until-prompt",
+        type=int,
+        help="Include prompts up to 1-based index N (e.g. 10)",
+    )
     p_record.add_argument("--edit", "-e", action="store_true", help="Edit note in $EDITOR before saving")
     p_record.add_argument("--quiet", "-q", action="store_true", help="Suppress confirmation message")
     p_record.add_argument("--dry-run", "-n", action="store_true", help="Print note without writing to git")
