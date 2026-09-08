@@ -2167,6 +2167,35 @@ class TestIngestionAdapters(unittest.TestCase):
         self.assertFalse(hasattr(gpn, "get_agent_identity"),
                          "dead module-level get_agent_identity() should be removed")
 
+    def test_claude_adapter_keeps_bash_input_but_drops_output(self):
+        """A local `!command` is user steering Claude reacts to: keep the command turn
+        verbatim (the <bash-input> wrapper is context), but exclude its
+        <bash-stdout>/<bash-stderr> output."""
+        transcript = self.work_dir / "claude-bash.jsonl"
+        lines = [
+            json.dumps({"type": "user", "message": {"role": "user", "content": "Real typed prompt"},
+                        "promptSource": "typed", "timestamp": "2026-09-07T12:00:00Z"}),
+            json.dumps({"type": "user", "message": {"role": "user",
+                        "content": "<bash-input>ls -la</bash-input>"},
+                        "timestamp": "2026-09-07T12:00:01Z"}),
+            json.dumps({"type": "user", "message": {"role": "user",
+                        "content": "<bash-stdout>total 12\ndrwxr-xr-x  x</bash-stdout><bash-stderr></bash-stderr>"},
+                        "timestamp": "2026-09-07T12:00:02Z"}),
+            json.dumps({"type": "user", "message": {"role": "user",
+                        "content": "<bash-stdout></bash-stdout><bash-stderr>command not found</bash-stderr>"},
+                        "timestamp": "2026-09-07T12:00:03Z"}),
+            json.dumps({"type": "user", "message": {"role": "user", "content": "Second real prompt"},
+                        "promptSource": "typed", "timestamp": "2026-09-07T12:00:04Z"}),
+        ]
+        transcript.write_text("\n".join(lines), encoding="utf-8")
+
+        adapter = gpn.ClaudeCodeAdapter()
+        parsed = adapter.parse_transcript_file(transcript)
+        self.assertIsNotNone(parsed)
+        prompts = [p.text for p in parsed["prompts"]]
+        self.assertEqual(prompts, ["Real typed prompt", "<bash-input>ls -la</bash-input>", "Second real prompt"])
+        self.assertFalse(any("bash-stdout" in p or "bash-stderr" in p for p in prompts))
+
 
 class TestRecordDateOption(unittest.TestCase):
     def setUp(self):

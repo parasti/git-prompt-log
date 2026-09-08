@@ -1364,6 +1364,13 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
                             parts.append(str(p["text"]))
                     text = "\n".join(parts)
 
+                # A local `!command` is echoed into the transcript as user turns. The
+                # <bash-stdout>/<bash-stderr> output is a tool result, not a prompt, so
+                # skip it; the <bash-input> command is user steering Claude reacts to,
+                # so keep it verbatim (the wrapper preserves that it was a command).
+                if text.lstrip().startswith(("<bash-stdout>", "<bash-stderr>")):
+                    continue
+
                 clean = clean_user_prompt(text)
                 if clean:
                     raw_turns.append((format_utc(str(created_at)), clean))
