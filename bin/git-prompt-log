@@ -1822,6 +1822,49 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
         return 1
     commit_hash = commit_out
 
+    is_delete = getattr(args, "delete", False)
+    keep_last_val = getattr(args, "keep_last", None)
+    is_keep_zero = (keep_last_val is not None and keep_last_val == 0)
+
+    if is_delete or is_keep_zero:
+        existing_raw = get_note_content(commit_hash, ref=ref, repo_root=repo_root) or ""
+        prefix, prompt_block, suffix = extract_prompt_block(existing_raw)
+
+        if not prompt_block and not existing_raw.strip():
+            if getattr(args, "_in_range", False) or getattr(args, "force", False):
+                if not getattr(args, "quiet", False):
+                    print(f"No prompt note on {commit_hash[:8]}")
+                return 0
+            sys.stderr.write(f"No prompt note on commit {commit_hash[:8]}.\n")
+            return 1
+
+        if not prompt_block:
+            if getattr(args, "_in_range", False) or getattr(args, "force", False):
+                if not getattr(args, "quiet", False):
+                    print(f"No prompt note on {commit_hash[:8]}")
+                return 0
+            sys.stderr.write(f"No prompt note on commit {commit_hash[:8]}.\n")
+            return 1
+
+        if prefix or suffix:
+            final_note = (prefix.rstrip() + "\n\n" + suffix.lstrip()).strip()
+        else:
+            final_note = ""
+
+        if getattr(args, "dry_run", False):
+            print(f"--- Prompt Note for {commit_hash[:8]} ---")
+            print(final_note.strip() if final_note.strip() else "(empty / removed)")
+            return 0
+
+        if not final_note.strip():
+            remove_note_content(commit_hash, ref=ref, repo_root=repo_root)
+        else:
+            write_note_content(commit_hash, final_note, ref=ref, repo_root=repo_root)
+
+        if not getattr(args, "quiet", False):
+            print(f"Removed prompt note on {commit_hash[:8]}")
+        return 0
+
     # Get commit date (default to author date so rebased/amended commits match transcript)
     date_type = getattr(args, "date", "author") or "author"
     date_fmt = "%cI" if date_type == "committer" else "%aI"
@@ -1867,7 +1910,7 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
     existing_notes = parse_notes(existing_raw)
 
     if not session_data:
-        if existing_notes and (exclude_patterns or getattr(args, "drop_last", 0)):
+        if existing_notes and (exclude_patterns or getattr(args, "drop_last", 0) or getattr(args, "keep_last", None) is not None):
             # Retroactively drop or prune existing note without needing an active session transcript
             all_notes = existing_notes
             session_id = existing_notes[-1].session_id
@@ -1923,24 +1966,27 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
             target_prompts = target_prompts[:-args.drop_last]
 
         if getattr(args, "keep_last", None) is not None:
-            if args.keep_last <= 0:
-                sys.stderr.write("Error: --keep-last must be a positive integer\n")
+            if args.keep_last < 0:
+                sys.stderr.write("Error: --keep-last must be a non-negative integer\n")
                 return 1
-            target_prompts = target_prompts[-args.keep_last:]
+            target_prompts = target_prompts[-args.keep_last:] if args.keep_last > 0 else []
 
         # Sort reverse-chronologically so causal prompt is at the top
         target_prompts.sort(key=lambda p: parse_timestamp_sort_key(p.timestamp), reverse=True)
 
-        new_note = SessionNote(
-            session_id=session_id,
-            harness=harness,
-            model=model,
-            recorded_at=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-            prompts=target_prompts,
-        )
-
-        other_notes = [n for n in existing_notes if n.session_id != session_id]
-        all_notes = other_notes + [new_note]
+        if target_prompts:
+            new_note = SessionNote(
+                session_id=session_id,
+                harness=harness,
+                model=model,
+                recorded_at=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+                prompts=target_prompts,
+            )
+            other_notes = [n for n in existing_notes if n.session_id != session_id]
+            all_notes = other_notes + [new_note]
+        else:
+            other_notes = [n for n in existing_notes if n.session_id != session_id]
+            all_notes = other_notes
 
     merged = merge_session_notes(all_notes)
 
@@ -1977,10 +2023,12 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
                 merged.pop()
 
     if not session_data and getattr(args, "keep_last", None) is not None:
-        if args.keep_last <= 0:
-            sys.stderr.write("Error: --keep-last must be a positive integer\n")
+        if args.keep_last < 0:
+            sys.stderr.write("Error: --keep-last must be a non-negative integer\n")
             return 1
-        if merged and merged[-1].prompts:
+        if args.keep_last == 0:
+            merged = []
+        elif merged and merged[-1].prompts:
             merged[-1].prompts = merged[-1].prompts[:args.keep_last]
             if not merged[-1].prompts:
                 merged.pop()
@@ -2028,8 +2076,8 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
 
 def cmd_record(args: argparse.Namespace) -> int:
     """Attaches or updates a prompt note on a commit or range of commits."""
-    if getattr(args, "keep_last", None) is not None and args.keep_last <= 0:
-        sys.stderr.write("Error: --keep-last must be a positive integer\n")
+    if getattr(args, "keep_last", None) is not None and args.keep_last < 0:
+        sys.stderr.write("Error: --keep-last must be a non-negative integer\n")
         return 1
 
     repo_root = get_repo_root()
@@ -2060,6 +2108,7 @@ def cmd_record(args: argparse.Namespace) -> int:
             c_args.commit = chash
             c_args.range_flag = None
             c_args.target = None
+            c_args._in_range = True
             ret = _record_single_commit(c_args, repo_root=repo_root)
             if ret != 0:
                 return ret
@@ -3338,6 +3387,12 @@ def cmd_edit(args: argparse.Namespace) -> int:
     return res.returncode
 
 
+def cmd_delete(args: argparse.Namespace) -> int:
+    """Deletes prompt notes from a commit or range of commits."""
+    args.delete = True
+    return cmd_record(args)
+
+
 def main():
     base_parser = argparse.ArgumentParser(add_help=False)
     base_parser.add_argument(
@@ -3412,7 +3467,21 @@ def main():
     p_record.add_argument(
         "--keep-last",
         type=int,
-        help="Keep only the last N prompts (drop older prompts)",
+        help="Keep only the last N prompts (0 removes prompt note)",
+    )
+    p_record.add_argument(
+        "--delete",
+        "-d",
+        "--remove",
+        "--rm",
+        action="store_true",
+        help="Delete prompt note from target commit(s)",
+    )
+    p_record.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="Do not error if prompt note does not exist",
     )
     p_record.add_argument(
         "--prompts",
@@ -3482,6 +3551,25 @@ def main():
     # edit
     p_edit = subparsers.add_parser("edit", help="Edit prompt note on a commit in $EDITOR", parents=[base_parser])
     p_edit.add_argument("commit", nargs="?", default="HEAD", help="Target commit hash or ref (default: HEAD)")
+
+    # delete
+    p_delete = subparsers.add_parser(
+        "delete",
+        aliases=["rm", "remove"],
+        help="Delete prompt note from a commit or range of commits",
+        parents=[base_parser],
+    )
+    p_delete.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="Target commit hash or revision range (default: HEAD)",
+    )
+    p_delete.add_argument("--commit", "-c", help="Target commit hash or ref (default: HEAD)")
+    p_delete.add_argument("--range", "-r", dest="range_flag", help="Target commit revision range (e.g. master..HEAD)")
+    p_delete.add_argument("--force", "-f", action="store_true", help="Do not error if prompt note does not exist")
+    p_delete.add_argument("--quiet", "-q", action="store_true", help="Suppress confirmation message")
+    p_delete.add_argument("--dry-run", "-n", action="store_true", help="Print note deletion preview without modifying git notes")
 
     # deinit
     p_deinit = subparsers.add_parser(
@@ -3557,6 +3645,8 @@ def main():
         sys.exit(cmd_deinit(args))
     elif args.command == "record":
         sys.exit(cmd_record(args))
+    elif args.command in ("delete", "rm", "remove"):
+        sys.exit(cmd_delete(args))
     elif args.command == "harness":
         sys.exit(cmd_harness(args))
     elif args.command == "session":

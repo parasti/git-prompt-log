@@ -2357,13 +2357,108 @@ class TestRecordPromptIndexOptions(unittest.TestCase):
 
     def test_record_keep_last_invalid(self):
         script_path = str(bin_path)
-        res0 = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--keep-last", "0"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
-        self.assertNotEqual(res0.returncode, 0)
-        self.assertIn("must be a positive integer", res0.stderr)
-
         res_neg = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--keep-last", "-2"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
         self.assertNotEqual(res_neg.returncode, 0)
-        self.assertIn("must be a positive integer", res_neg.stderr)
+        self.assertIn("must be a non-negative integer", res_neg.stderr)
+
+    def test_record_keep_last_zero_deletes_note(self):
+        script_path = str(bin_path)
+        # First record note
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD"], cwd=self.repo_dir, env=self.env, check=True)
+        note_before = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        self.assertIsNotNone(note_before)
+
+        # Record with --keep-last 0 to delete note
+        res = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--keep-last", "0"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("Removed prompt note on", res.stdout)
+        note_after = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        self.assertIsNone(note_after)
+
+    def test_record_delete_flag(self):
+        script_path = str(bin_path)
+        # First record note
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD"], cwd=self.repo_dir, env=self.env, check=True)
+        self.assertIsNotNone(gpn.get_note_content("HEAD", repo_root=self.repo_dir))
+
+        # Delete note via --delete
+        res = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--delete"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("Removed prompt note on", res.stdout)
+        self.assertIsNone(gpn.get_note_content("HEAD", repo_root=self.repo_dir))
+
+    def test_record_delete_flag_aliases(self):
+        script_path = str(bin_path)
+        # Test -d
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD"], cwd=self.repo_dir, env=self.env, check=True)
+        res_d = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "-d"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res_d.returncode, 0)
+        self.assertIsNone(gpn.get_note_content("HEAD", repo_root=self.repo_dir))
+
+        # Test --rm
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD"], cwd=self.repo_dir, env=self.env, check=True)
+        res_rm = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--rm"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res_rm.returncode, 0)
+        self.assertIsNone(gpn.get_note_content("HEAD", repo_root=self.repo_dir))
+
+    def test_record_delete_dry_run(self):
+        script_path = str(bin_path)
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD"], cwd=self.repo_dir, env=self.env, check=True)
+        res = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--delete", "--dry-run"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("(empty / removed)", res.stdout)
+        # Note should still exist
+        self.assertIsNotNone(gpn.get_note_content("HEAD", repo_root=self.repo_dir))
+
+    def test_record_delete_preserves_external_notes(self):
+        script_path = str(bin_path)
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD"], cwd=self.repo_dir, env=self.env, check=True)
+        orig_note = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        custom_note = f"External reviewer comment\n\n{orig_note}\n\nFooter signature"
+        gpn.write_note_content("HEAD", custom_note, repo_root=self.repo_dir)
+
+        # Delete prompt note
+        res = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--delete"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("Removed prompt note on", res.stdout)
+
+        # External content must remain
+        rem = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        self.assertIsNotNone(rem)
+        self.assertIn("External reviewer comment", rem)
+        self.assertIn("Footer signature", rem)
+        self.assertNotIn("Assistant-Prompts:", rem)
+
+    def test_record_delete_missing_note(self):
+        script_path = str(bin_path)
+        head_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+        # Ensure no note exists
+        gpn.remove_note_content(head_commit, repo_root=self.repo_dir)
+
+        # Without force: fails with 1
+        res = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--delete"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("No prompt note on commit", res.stderr)
+
+        # With --force: returns 0
+        res_f = subprocess.run(["python3", script_path, "record", "-c", "HEAD", "--delete", "--force"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res_f.returncode, 0)
+
+    def test_delete_subcommand(self):
+        script_path = str(bin_path)
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD"], cwd=self.repo_dir, env=self.env, check=True)
+        self.assertIsNotNone(gpn.get_note_content("HEAD", repo_root=self.repo_dir))
+
+        res = subprocess.run(["python3", script_path, "delete", "HEAD"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("Removed prompt note on", res.stdout)
+        self.assertIsNone(gpn.get_note_content("HEAD", repo_root=self.repo_dir))
+
+        # Test rm alias with HEAD default
+        subprocess.run(["python3", script_path, "record", "-c", "HEAD"], cwd=self.repo_dir, env=self.env, check=True)
+        res_rm = subprocess.run(["python3", script_path, "rm"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res_rm.returncode, 0, res_rm.stderr)
+        self.assertIsNone(gpn.get_note_content("HEAD", repo_root=self.repo_dir))
 
 
 
@@ -2479,6 +2574,51 @@ class TestRecordRange(unittest.TestCase):
         note2 = gpn.get_note_content(c2, repo_root=self.repo_dir)
         self.assertNotIn("Prompt 1 for commit 1", note2)
         self.assertIn("Prompt 2 for commit 2", note2)
+
+    def test_record_range_with_keep_last_zero(self):
+        script_path = str(bin_path)
+        # First record notes on range
+        subprocess.run(["python3", script_path, "record", "main..feature"], cwd=self.repo_dir, env=self.env, check=True)
+        c1 = subprocess.check_output(["git", "rev-parse", "HEAD~1"], cwd=self.repo_dir, text=True).strip()
+        c2 = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+        self.assertIsNotNone(gpn.get_note_content(c1, repo_root=self.repo_dir))
+        self.assertIsNotNone(gpn.get_note_content(c2, repo_root=self.repo_dir))
+
+        # Now delete using --keep-last 0 across range
+        res = subprocess.run(["python3", script_path, "record", "main..feature", "--keep-last", "0"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIsNone(gpn.get_note_content(c1, repo_root=self.repo_dir))
+        self.assertIsNone(gpn.get_note_content(c2, repo_root=self.repo_dir))
+
+    def test_record_range_with_delete(self):
+        script_path = str(bin_path)
+        # First record notes on range
+        subprocess.run(["python3", script_path, "record", "main..feature"], cwd=self.repo_dir, env=self.env, check=True)
+        c1 = subprocess.check_output(["git", "rev-parse", "HEAD~1"], cwd=self.repo_dir, text=True).strip()
+        c2 = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+        self.assertIsNotNone(gpn.get_note_content(c1, repo_root=self.repo_dir))
+        self.assertIsNotNone(gpn.get_note_content(c2, repo_root=self.repo_dir))
+
+        # Delete using --delete across range
+        res = subprocess.run(["python3", script_path, "record", "main..feature", "--delete"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIsNone(gpn.get_note_content(c1, repo_root=self.repo_dir))
+        self.assertIsNone(gpn.get_note_content(c2, repo_root=self.repo_dir))
+
+    def test_delete_subcommand_range(self):
+        script_path = str(bin_path)
+        # First record notes on range
+        subprocess.run(["python3", script_path, "record", "main..feature"], cwd=self.repo_dir, env=self.env, check=True)
+        c1 = subprocess.check_output(["git", "rev-parse", "HEAD~1"], cwd=self.repo_dir, text=True).strip()
+        c2 = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+        self.assertIsNotNone(gpn.get_note_content(c1, repo_root=self.repo_dir))
+        self.assertIsNotNone(gpn.get_note_content(c2, repo_root=self.repo_dir))
+
+        # Delete using delete subcommand across range
+        res = subprocess.run(["python3", script_path, "delete", "main..feature"], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIsNone(gpn.get_note_content(c1, repo_root=self.repo_dir))
+        self.assertIsNone(gpn.get_note_content(c2, repo_root=self.repo_dir))
 
 
 
@@ -2756,6 +2896,13 @@ class TestClaudeSessionCommand(unittest.TestCase):
     def _run_session(self, extra_env=None):
         env = os.environ.copy()
         env["PATH"] = f"{bin_path.parent}:{env.get('PATH', '')}"
+        for k in list(env.keys()):
+            if "ANTIGRAVITY" in k or "AGY" in k or "GEMINI" in k:
+                env.pop(k, None)
+        empty_brain = Path(self.tmp.name) / "empty_brain"
+        empty_brain.mkdir(exist_ok=True)
+        env["ANTIGRAVITY_DATA_DIR"] = str(empty_brain)
+        env.pop("PROMPT_LOG_HARNESS", None)
         if extra_env:
             env.update(extra_env)
         return subprocess.run(["python3", str(bin_path), "session"],
@@ -2775,6 +2922,13 @@ class TestClaudeSessionCommand(unittest.TestCase):
     def _run(self, *args, extra_env=None):
         env = os.environ.copy()
         env["PATH"] = f"{bin_path.parent}:{env.get('PATH', '')}"
+        for k in list(env.keys()):
+            if "ANTIGRAVITY" in k or "AGY" in k or "GEMINI" in k:
+                env.pop(k, None)
+        empty_brain = Path(self.tmp.name) / "empty_brain"
+        empty_brain.mkdir(exist_ok=True)
+        env["ANTIGRAVITY_DATA_DIR"] = str(empty_brain)
+        env.pop("PROMPT_LOG_HARNESS", None)
         if extra_env:
             env.update(extra_env)
         return subprocess.run(["python3", str(bin_path), "session", *args],

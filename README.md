@@ -198,9 +198,11 @@ Session exclusions are persisted in `prompt-log-excludes.json` alongside the ses
 Prompts can also be filtered or modified retroactively via the CLI:
 
 - `git prompt-log record <range>` or `--range <range>`: Record notes across a commit range (e.g. `main..HEAD`), attributing prompts up to each commit's author date.
+- `git prompt-log record --delete` (or `-d`): Delete prompt notes from a commit or range of commits.
+- `git prompt-log delete [target]` (or `rm`): Delete prompt notes off a commit or revision range (defaults to `HEAD`).
 - `git prompt-log record --drop "<pattern>"`: Exclude prompts matching a regex pattern (works on existing notes or new recordings).
 - `git prompt-log record --drop-last <N>`: Drop the last *N* prompts before recording.
-- `git prompt-log record --keep-last <N>`: Retain only the last *N* prompts (dropping older prompts).
+- `git prompt-log record --keep-last <N>`: Retain only the last *N* prompts (passing `0` deletes the prompt note).
 - `git prompt-log record --until-prompt <N>`: Include prompts up to 1-based index *N* (e.g. `--until-prompt 10`).
 - `git prompt-log record --prompts <spec>`: Select specific prompts by index or range matching `session` output (e.g. `-p 1-10`, `-p 1,3,5`).
 - `git prompt-log record --date {author,committer}`: Choose which commit date to filter session prompts by (defaults to author date so rebased or amended commits match original prompts).
