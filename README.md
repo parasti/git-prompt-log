@@ -16,7 +16,7 @@ cd git-prompt-log
 ./install.sh
 ```
 
-`./install.sh` installs the binary into `~/.local/bin/` and prompts before making any global Git or assistant configuration changes.
+`./install.sh` installs the binary into `~/.local/bin/` and prompts before installing the assistant skill globally. Prompt note hooks and rewrite configs are initialized per repository via `git prompt-log init`.
 
 ### Quickstart: Try It On This Repo
 

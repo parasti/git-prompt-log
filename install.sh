@@ -2,13 +2,12 @@
 set -euo pipefail
 
 # git-prompt-log installer
-# Installs the CLI binary and prompts before applying global Git or agent configurations.
+# Installs the CLI binary and optional assistant skill.
 
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR="${PREFIX}/bin"
 SKILL_DIR="${HOME}/.gemini/config/skills/git-prompt-log"
 
-GLOBAL_GIT=""
 GLOBAL_SKILL=""
 
 usage() {
@@ -17,8 +16,8 @@ Usage: ./install.sh [options]
 
 Options:
   --prefix <dir>       Installation prefix (default: ~/.local)
-  --global             Configure Git and install assistant skill globally without asking
-  --local-only         Install only the CLI binary; skip all global configurations
+  --skill              Install assistant skill globally without asking (~/.gemini/config/skills)
+  --no-skill           Skip assistant skill installation
   -y, --yes            Assume yes to all prompts
   -h, --help           Show this help message
 HELP
@@ -32,18 +31,15 @@ while [[ $# -gt 0 ]]; do
             BIN_DIR="${PREFIX}/bin"
             shift 2
             ;;
-        --global)
-            GLOBAL_GIT=true
+        --skill|--global)
             GLOBAL_SKILL=true
             shift
             ;;
-        --local-only)
-            GLOBAL_GIT=false
+        --no-skill|--local-only)
             GLOBAL_SKILL=false
             shift
             ;;
         -y|--yes)
-            GLOBAL_GIT=true
             GLOBAL_SKILL=true
             shift
             ;;
@@ -95,25 +91,7 @@ prompt_yes_no() {
 echo ""
 echo "Configuration:"
 
-# 2. Global Git config
-if [[ -z "${GLOBAL_GIT}" ]]; then
-    if prompt_yes_no "Configure Git globally to rewrite notes on rebase/amend? [y/N]" "n"; then
-        GLOBAL_GIT=true
-    else
-        GLOBAL_GIT=false
-    fi
-fi
-
-if [[ "${GLOBAL_GIT}" = true ]]; then
-    git config --global notes.rewrite.rebase true
-    git config --global notes.rewrite.amend true
-    git config --global notes.rewriteRef refs/notes/commits
-    echo "  [+] Configured Git global: notes.rewriteRef = refs/notes/commits"
-else
-    echo "  [-] Skipped global Git config"
-fi
-
-# 3. Global Antigravity skill
+# 2. Global Antigravity skill
 if [[ -z "${GLOBAL_SKILL}" ]]; then
     if prompt_yes_no "Install Antigravity assistant skill globally (~/.gemini/config/skills)? [y/N]" "n"; then
         GLOBAL_SKILL=true
@@ -130,7 +108,7 @@ else
     echo "  [-] Skipped global skill installation"
 fi
 
-# 4. Check PATH
+# 3. Check PATH
 case ":$PATH:" in
     *":${BIN_DIR}:"*)
         ;;
@@ -144,9 +122,7 @@ esac
 
 echo ""
 echo "==> Installation complete!"
-if [[ "${GLOBAL_GIT}" = false || "${GLOBAL_SKILL}" = false ]]; then
-    echo ""
-    echo "To enable git-prompt-log for a specific repository, run:"
-    echo "  cd /path/to/my-repo"
-    echo "  git prompt-log init"
-fi
+echo ""
+echo "To enable git-prompt-log in a repository, run:"
+echo "  cd /path/to/my-repo"
+echo "  git prompt-log init"
