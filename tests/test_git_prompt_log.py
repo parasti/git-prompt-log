@@ -2946,5 +2946,142 @@ class TestClaudeSessionCommand(unittest.TestCase):
         self.assertNotIn("[EXCLUDED]", listed2.stdout)
 
 
+class TestCandidateSessionDiscoveryAndSafeRangeRecord(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.work_dir = Path(self.tmp_dir.name)
+        self.repo_dir = self.work_dir / "repo"
+        self.repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repo_dir, check=True)
+
+        self.brain_dir = self.work_dir / "brain"
+        self.session1 = "11111111-aaaa-bbbb-cccc-111111111111"
+        self.session2 = "22222222-aaaa-bbbb-cccc-222222222222"
+
+        # Setup session 1
+        s1_dir = self.brain_dir / self.session1 / ".system_generated" / "logs"
+        s1_dir.mkdir(parents=True, exist_ok=True)
+        s1_steps = [
+            {"type": "USER_INPUT", "source": "USER_EXPLICIT", "content": f"Workspace: {self.repo_dir}\nFirst prompt in session 1", "created_at": "2026-09-04T10:00:00Z"},
+            {"type": "USER_INPUT", "source": "USER_EXPLICIT", "content": "Second prompt in session 1", "created_at": "2026-09-04T10:10:00Z"},
+        ]
+        with open(s1_dir / "transcript.jsonl", "w", encoding="utf-8") as f:
+            for s in s1_steps:
+                f.write(json.dumps(s) + "\n")
+        os.utime(s1_dir / "transcript.jsonl", (1788516000, 1788516000))
+
+        # Setup session 2 (newer timestamp)
+        s2_dir = self.brain_dir / self.session2 / ".system_generated" / "logs"
+        s2_dir.mkdir(parents=True, exist_ok=True)
+        s2_steps = [
+            {"type": "USER_INPUT", "source": "USER_EXPLICIT", "content": f"Workspace: {self.repo_dir}\nFeature prompt in session 2", "created_at": "2026-09-04T12:00:00Z"},
+        ]
+        with open(s2_dir / "transcript.jsonl", "w", encoding="utf-8") as f:
+            for s in s2_steps:
+                f.write(json.dumps(s) + "\n")
+        os.utime(s2_dir / "transcript.jsonl", (1788523200, 1788523200))
+
+        self.env = os.environ.copy()
+        self.env["PATH"] = f"{bin_path.parent}:{self.env.get('PATH', '')}"
+        self.env["ANTIGRAVITY_DATA_DIR"] = str(self.work_dir)
+        for k in list(self.env.keys()):
+            if k in ("AGY_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "CLAUDE_CODE_SESSION_ID", "PROMPT_LOG_HARNESS"):
+                self.env.pop(k, None)
+
+        # Initial commit on main: 08:00:00 UTC
+        (self.repo_dir / "base.txt").write_text("base")
+        subprocess.run(["git", "add", "base.txt"], cwd=self.repo_dir, check=True)
+        c_env = self.env.copy()
+        c_env["GIT_AUTHOR_DATE"] = "2026-09-04T08:00:00Z"
+        c_env["GIT_COMMITTER_DATE"] = "2026-09-04T08:00:00Z"
+        subprocess.run(["git", "commit", "-m", "chore: initial base"], cwd=self.repo_dir, env=c_env, check=True)
+
+        subprocess.run(["git", "checkout", "-b", "feature"], cwd=self.repo_dir, check=True, capture_output=True)
+
+        # Commit 1 on feature: 09:00:00 UTC (HUMAN / UNPROMPTED commit before session 1 started at 10:00)
+        (self.repo_dir / "human.txt").write_text("human")
+        subprocess.run(["git", "add", "human.txt"], cwd=self.repo_dir, check=True)
+        c_env["GIT_AUTHOR_DATE"] = "2026-09-04T09:00:00Z"
+        c_env["GIT_COMMITTER_DATE"] = "2026-09-04T09:00:00Z"
+        subprocess.run(["git", "commit", "-m", "chore: unprompted human commit"], cwd=self.repo_dir, env=c_env, check=True)
+
+        # Commit 2 on feature: 10:05:00 UTC (after prompt 1 of session 1)
+        (self.repo_dir / "p1.txt").write_text("p1")
+        subprocess.run(["git", "add", "p1.txt"], cwd=self.repo_dir, check=True)
+        c_env["GIT_AUTHOR_DATE"] = "2026-09-04T10:05:00Z"
+        c_env["GIT_COMMITTER_DATE"] = "2026-09-04T10:05:00Z"
+        subprocess.run(["git", "commit", "-m", "feat: first prompted commit"], cwd=self.repo_dir, env=c_env, check=True)
+
+        # Commit 3 on feature: 10:15:00 UTC (after prompt 2 of session 1)
+        (self.repo_dir / "p2.txt").write_text("p2")
+        subprocess.run(["git", "add", "p2.txt"], cwd=self.repo_dir, check=True)
+        c_env["GIT_AUTHOR_DATE"] = "2026-09-04T10:15:00Z"
+        c_env["GIT_COMMITTER_DATE"] = "2026-09-04T10:15:00Z"
+        subprocess.run(["git", "commit", "-m", "feat: second prompted commit"], cwd=self.repo_dir, env=c_env, check=True)
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def test_session_list_sessions(self):
+        script_path = str(bin_path)
+        for cmd in (["session", "list-sessions"], ["session", "ls"], ["session", "sessions"]):
+            res = subprocess.run(["python3", script_path, *cmd], cwd=self.repo_dir, env=self.env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertIn("Candidate sessions for", res.stdout)
+            self.assertIn(self.session1, res.stdout)
+            self.assertIn(self.session2, res.stdout)
+            self.assertIn("First prompt in session 1", res.stdout)
+            self.assertIn("Feature prompt in session 2", res.stdout)
+
+    def test_session_list_sessions_shows_active_marker(self):
+        script_path = str(bin_path)
+        env = self.env.copy()
+        env["AGY_SESSION_ID"] = self.session1
+        res = subprocess.run(["python3", script_path, "session", "list-sessions"], cwd=self.repo_dir, env=env, capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn(f"{self.session1} [ACTIVE]", res.stdout)
+
+    def test_record_range_skips_unprompted_commit(self):
+        script_path = str(bin_path)
+        res = subprocess.run(
+            ["python3", script_path, "record", "--session", self.session1, "main..feature"],
+            cwd=self.repo_dir,
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        c_human = subprocess.check_output(["git", "rev-parse", "HEAD~2"], cwd=self.repo_dir, text=True).strip()
+        self.assertIn(f"Skipped commit {c_human[:8]}: no prompts prior to commit date in session {self.session1[:8]}", res.stdout)
+        self.assertIsNone(gpn.get_note_content(c_human, repo_root=self.repo_dir))
+
+        c_p1 = subprocess.check_output(["git", "rev-parse", "HEAD~1"], cwd=self.repo_dir, text=True).strip()
+        note_p1 = gpn.get_note_content(c_p1, repo_root=self.repo_dir)
+        self.assertIsNotNone(note_p1)
+        self.assertIn("First prompt in session 1", note_p1)
+        self.assertNotIn("Second prompt in session 1", note_p1)
+
+        c_p2 = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+        note_p2 = gpn.get_note_content(c_p2, repo_root=self.repo_dir)
+        self.assertIsNotNone(note_p2)
+        self.assertIn("First prompt in session 1", note_p2)
+        self.assertIn("Second prompt in session 1", note_p2)
+
+    def test_record_single_unprompted_commit_fails(self):
+        script_path = str(bin_path)
+        c_human = subprocess.check_output(["git", "rev-parse", "HEAD~2"], cwd=self.repo_dir, text=True).strip()
+        res = subprocess.run(
+            ["python3", script_path, "record", "--session", self.session1, "-c", c_human],
+            cwd=self.repo_dir,
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("No prompts found prior to commit date", res.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

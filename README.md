@@ -168,11 +168,18 @@ Assistant-Prompts:
 
 ## Session Prompt Management (Exclusions & Retraction)
 
-You can inspect, exclude, or restore individual prompts from an active assistant session using the `session` subcommand:
+You can discover, inspect, exclude, or restore individual prompts from assistant sessions using the `session` subcommand:
 
 ```bash
-# List prompts in the active session with 1-based index numbers
+# List all candidate agent sessions matching the current repository / worktree
+git prompt-log session list-sessions
+git prompt-log session ls
+
+# List prompts in the active (or latest matching) session with 1-based index numbers
 git prompt-log session
+
+# Inspect prompts in a specific session
+git prompt-log session --session <session-id>
 
 # View unified chronological timeline interleaving prompts and branch commits
 git prompt-log session --commits
@@ -197,7 +204,7 @@ Session exclusions are persisted in `prompt-log-excludes.json` alongside the ses
 
 Prompts can also be filtered or modified retroactively via the CLI:
 
-- `git prompt-log record <range>` or `--range <range>`: Record notes across a commit range (e.g. `main..HEAD`), attributing prompts up to each commit's author date.
+- `git prompt-log record <range>` or `--range <range>`: Record notes across a commit range (e.g. `main..HEAD`), attributing prompts up to each commit's author date. Commits without matching prompts in the session timeline (e.g. human commits made prior to or outside the session) are cleanly skipped and left uncorrupted. Use `--session <uuid>` to target a specific session.
 - `git prompt-log record --delete` (or `-d`): Delete prompt notes from a commit or range of commits.
 - `git prompt-log delete [target]` (or `rm`): Delete prompt notes off a commit or revision range (defaults to `HEAD`).
 - `git prompt-log record --drop "<pattern>"`: Exclude prompts matching a regex pattern (works on existing notes or new recordings).

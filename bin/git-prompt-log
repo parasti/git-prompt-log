@@ -642,6 +642,22 @@ def format_utc(dt_str: str) -> str:
         return dt_str
 
 
+def parse_utc_datetime(ts: str) -> Optional[datetime.datetime]:
+    """Parses a timestamp string into a UTC datetime object."""
+    if not ts:
+        return None
+    cleaned = ts.replace(" UTC", "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.datetime.strptime(cleaned, fmt).replace(tzinfo=datetime.timezone.utc)
+        except ValueError:
+            pass
+    try:
+        return datetime.datetime.fromisoformat(cleaned.replace("Z", "+00:00")).astimezone(datetime.timezone.utc)
+    except Exception:
+        return None
+
+
 def process_prompt_turns(raw_turns: List[Tuple[str, str]]) -> List[PromptEntry]:
     """Converts sequential raw prompt turns into PromptEntry objects."""
     prompts: List[PromptEntry] = []
@@ -718,6 +734,12 @@ class BaseIngestionAdapter(abc.ABC):
         or None if no session found.
         """
         pass
+
+    def list_candidate_sessions(
+        self, repo_root: Optional[Path] = None
+    ) -> List[Dict[str, Any]]:
+        """Returns candidate sessions that match the repository or working directory."""
+        return []
 
 
 class AntigravityAdapter(BaseIngestionAdapter):
@@ -978,6 +1000,78 @@ class AntigravityAdapter(BaseIngestionAdapter):
         # 2. Latest active session in brain matching repository
         res = self._find_latest_matching_session(repo)
         return res[0] if res else None
+
+    def list_candidate_sessions(
+        self, repo_root: Optional[Path] = None
+    ) -> List[Dict[str, Any]]:
+        repo = repo_root or get_repo_root()
+        candidates: List[Dict[str, Any]] = []
+        seen_sids: Set[str] = set()
+
+        active_env_sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+
+        for brain in get_brain_dirs():
+            if not brain.exists():
+                continue
+            for cid_dir in brain.iterdir():
+                if not cid_dir.is_dir() or cid_dir.name.startswith("."):
+                    continue
+                sid = cid_dir.name
+                if sid in seen_sids:
+                    continue
+                t_path = cid_dir / ".system_generated" / "logs" / "transcript.jsonl"
+                if not t_path.exists():
+                    continue
+
+                try:
+                    mtime = t_path.stat().st_mtime
+                    paths = self._extract_session_paths(t_path)
+                    score = self._session_match_score(paths, repo) if repo else 1
+                    if score <= 0 and sid != active_env_sid:
+                        continue
+
+                    parsed = self.parse_transcript(t_path, apply_session_excludes=False, repo_root=repo)
+                    if not parsed:
+                        continue
+                    prompts = parsed.get("prompts", [])
+                    if not prompts:
+                        continue
+
+                    harness, model = self.get_agent_identity(parsed.get("detected_model"))
+                    first_p = prompts[0]
+                    last_p = prompts[-1]
+                    raw_lines = [l.strip() for l in first_p.text.splitlines() if l.strip()]
+                    first_line = raw_lines[0] if raw_lines else ""
+                    for l in raw_lines:
+                        if not l.lower().startswith("workspace:") and not l.lower().startswith("work in directory:"):
+                            first_line = l
+                            break
+                    if len(first_line) > 80:
+                        first_line = first_line[:77] + "..."
+
+                    is_active = (sid == active_env_sid)
+                    match_scope = "exact worktree" if score >= 2 else "repo"
+
+                    candidates.append({
+                        "session_id": sid,
+                        "harness": harness,
+                        "model": model,
+                        "prompt_count": len(prompts),
+                        "first_prompt_text": first_line,
+                        "first_prompt_ts": first_p.timestamp,
+                        "latest_prompt_ts": last_p.timestamp,
+                        "match_scope": match_scope,
+                        "score": score,
+                        "is_active": is_active,
+                        "mtime": mtime,
+                        "transcript_path": t_path,
+                    })
+                    seen_sids.add(sid)
+                except Exception:
+                    continue
+
+        candidates.sort(key=lambda x: (1 if x["is_active"] else 0, x["score"], x["mtime"]), reverse=True)
+        return candidates
 
     def get_agent_identity(
         self,
@@ -1475,6 +1569,78 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
 
         return None
 
+    def list_candidate_sessions(
+        self, repo_root: Optional[Path] = None
+    ) -> List[Dict[str, Any]]:
+        repo = repo_root or get_repo_root()
+        dirs = self._get_claude_dirs(repo_root=repo)
+        if not dirs:
+            return []
+
+        active_sid = self.detect_session_id(repo_root=repo)
+        repo_strs = get_repo_identifiers(repo)
+        worktree_paths = self._get_repo_worktree_paths(repo)
+        candidates: List[Dict[str, Any]] = []
+        seen_sids: Set[str] = set()
+
+        for d in dirs:
+            if not d.exists():
+                continue
+            files = [d] if d.is_file() else list(d.rglob("*.json*"))
+            for fpath in files:
+                sid = fpath.stem
+                if sid in seen_sids:
+                    continue
+                try:
+                    mtime = fpath.stat().st_mtime
+                    fpath_str = str(fpath).lower()
+                    in_repo = any(r in fpath_str for r in repo_strs) or self._transcript_cwd_in_repo(fpath, worktree_paths)
+                    if not in_repo and sid != active_sid:
+                        continue
+
+                    parsed = self.parse_transcript_file(
+                        fpath,
+                        apply_session_excludes=False,
+                        repo_root=repo,
+                    )
+                    if not parsed or not parsed.get("prompts"):
+                        continue
+
+                    prompts = parsed["prompts"]
+                    harness, model = self.get_agent_identity(parsed.get("detected_model"))
+                    first_p = prompts[0]
+                    last_p = prompts[-1]
+                    raw_lines = [l.strip() for l in first_p.text.splitlines() if l.strip()]
+                    first_line = raw_lines[0] if raw_lines else ""
+                    for l in raw_lines:
+                        if not l.lower().startswith("workspace:") and not l.lower().startswith("work in directory:"):
+                            first_line = l
+                            break
+                    if len(first_line) > 80:
+                        first_line = first_line[:77] + "..."
+
+                    is_active = (sid == active_sid)
+                    candidates.append({
+                        "session_id": sid,
+                        "harness": harness,
+                        "model": model,
+                        "prompt_count": len(prompts),
+                        "first_prompt_text": first_line,
+                        "first_prompt_ts": first_p.timestamp,
+                        "latest_prompt_ts": last_p.timestamp,
+                        "match_scope": "exact worktree" if in_repo else "repo",
+                        "score": 2 if in_repo else 1,
+                        "is_active": is_active,
+                        "mtime": mtime,
+                        "transcript_path": fpath,
+                    })
+                    seen_sids.add(sid)
+                except Exception:
+                    continue
+
+        candidates.sort(key=lambda x: (1 if x["is_active"] else 0, x["score"], x["mtime"]), reverse=True)
+        return candidates
+
 
 class ManualAdapter(BaseIngestionAdapter):
     name = "manual"
@@ -1652,6 +1818,26 @@ class AdapterRegistry:
                 return adapter, data
 
         return None, None
+
+    def list_candidate_sessions(
+        self,
+        repo_root: Optional[Path] = None,
+        harness_name: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        seen_sids: Set[str] = set()
+
+        adapters = [self.get(harness_name)] if (harness_name and harness_name != "auto") else self.list_adapters()
+        for adapter in adapters:
+            if not adapter or adapter.name == "manual":
+                continue
+            for sess in adapter.list_candidate_sessions(repo_root=repo_root):
+                if sess["session_id"] not in seen_sids:
+                    results.append(sess)
+                    seen_sids.add(sess["session_id"])
+
+        results.sort(key=lambda x: (1 if x["is_active"] else 0, x["score"], x["mtime"]), reverse=True)
+        return results
 
 
 REGISTRY = AdapterRegistry()
@@ -1952,9 +2138,24 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
                 if pts <= commit_sort_ts:
                     target_prompts.append(p)
 
-            if not target_prompts and all_prompts:
-                # Fallback to all session prompts if commit timestamp slightly precedes prompt log
-                target_prompts = list(all_prompts)
+            # In single-commit mode, allow a tight clock skew window (<= 120s) if the commit was created
+            # immediately as the first prompt was submitted, but never in range mode and never for distant commits.
+            if not target_prompts and all_prompts and not getattr(args, "_in_range", False):
+                commit_dt = parse_utc_datetime(commit_date_utc)
+                p0_dt = parse_utc_datetime(all_prompts[0].timestamp)
+                if commit_dt and p0_dt:
+                    diff_sec = (p0_dt - commit_dt).total_seconds()
+                    if 0 <= diff_sec <= 120:
+                        target_prompts.append(all_prompts[0])
+
+            if not target_prompts:
+                if getattr(args, "_in_range", False):
+                    if not getattr(args, "quiet", False):
+                        print(f"Skipped commit {commit_hash[:8]}: no prompts prior to commit date in session {session_id[:8]}")
+                    return 0
+                else:
+                    sys.stderr.write(f"No prompts found prior to commit date ({commit_date_utc}) in session {session_id[:8]}.\n")
+                    return 1
 
         if exclude_patterns:
             target_prompts = [
@@ -2103,6 +2304,28 @@ def cmd_record(args: argparse.Namespace) -> int:
         if not commits:
             sys.stderr.write(f"No commits found in revision range '{range_target}'.\n")
             return 1
+
+        if not getattr(args, "delete", False) and getattr(args, "keep_last", None) != 0 and not getattr(args, "dry_run", False):
+            harness_input = getattr(args, "harness", None)
+            known_harnesses = {"antigravity", "claude", "manual", "direct", "auto"}
+            if harness_input and harness_input.lower() in known_harnesses:
+                v = harness_input.lower()
+                adapter_name = "manual" if v == "direct" else v
+            elif harness_input:
+                adapter_name = "manual"
+            else:
+                adapter_name = "auto"
+            adapter, session_data = REGISTRY.find_session_data(
+                adapter_name=adapter_name,
+                session_id=args.session,
+                repo_root=repo_root,
+            )
+            if session_data and not getattr(args, "quiet", False):
+                sid = session_data.get("session_id", "unknown")
+                hname = session_data.get("harness") or (adapter.display_name if adapter else "Unknown")
+                pcount = len(session_data.get("prompts", []))
+                print(f"Recording range '{range_target}' using session {sid[:8]} ({hname}, {pcount} prompts)...")
+
         for chash in commits:
             c_args = argparse.Namespace(**vars(args))
             c_args.commit = chash
@@ -2987,6 +3210,22 @@ def cmd_session(args: argparse.Namespace) -> int:
     action = getattr(args, "action", "list") or "list"
     session_id = getattr(args, "session", None)
 
+    if action in ("list-sessions", "sessions", "ls"):
+        candidates = REGISTRY.list_candidate_sessions(repo_root=repo_root)
+        if not candidates:
+            print(f"No candidate sessions found for {repo_root}.")
+            return 0
+        print(f"Candidate sessions for {repo_root}:")
+        for sess in candidates:
+            active_str = " [ACTIVE]" if sess["is_active"] else ""
+            marker = "*" if sess["is_active"] else " "
+            print(f"  {marker} {sess['session_id']}{active_str}")
+            print(f"      Harness: {sess['harness']} | Model: {sess['model']} | Prompts: {sess['prompt_count']}")
+            print(f"      Recorded: {sess['first_prompt_ts']} ({sess['match_scope']} match)")
+            if sess.get("first_prompt_text"):
+                print(f"      First prompt: \"{sess['first_prompt_text']}\"")
+        return 0
+
     t_path = None
     raw_data = None
     if session_id:
@@ -3622,8 +3861,8 @@ def main():
         "action",
         nargs="?",
         default="list",
-        choices=["list", "show", "drop", "exclude", "undrop", "restore", "clear"],
-        help="Action: list (default), drop, undrop, clear",
+        choices=["list", "show", "drop", "exclude", "undrop", "restore", "clear", "list-sessions", "sessions", "ls"],
+        help="Action: list (default), list-sessions (ls), drop, undrop, clear",
     )
     p_session.add_argument("target", nargs="?", help="Prompt 1-based index (e.g. 2) or regex pattern (e.g. 'Commit')")
     p_session.add_argument("--session", "-s", help="Target session conversation UUID (default: active session)")
