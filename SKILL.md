@@ -27,7 +27,7 @@ When answering questions about the tool, use this technical foundation:
 
 ## 2. Executing Tasks on Request
 
-When the user asks you to perform operations with `git-prompt-log`, execute the appropriate commands:
+When the user asks you to perform operations with `git-prompt-log`, execute the appropriate commands decisively. When asked to export prompt logs, proactively synthesize a concise, descriptive snake_case slug from your context of the work and pass it directly with `--slug` and `--commit` without hesitating or prompting the human.
 
 ### Enable Prompt Notes in a Repository
 When asked to initialize or enable prompt notes:
@@ -52,11 +52,25 @@ git prompt-log
 ```
 
 ### Export Prompt Notes for Pull Requests
-When asked to prepare a branch for review, export notes, or package prompts for a PR:
-```bash
-git prompt-log export --commit
-```
-This detects the branch range against the upstream base branch, generates `prompts/YYYY_MM_DD_HHMMSS_<slug>.md`, and creates a commit on the branch so reviewers can see the prompt timeline in the PR diff.
+When asked to prepare a branch for review, export notes, export prompt logs, or package prompts for a PR:
+
+1. **Build a Descriptive Slug Autonomously:**
+   * Do **not** pause, ask the human for a slug, or fall back to generic defaults.
+   * As the coding agent, you have full context of the work performed. Synthesize a concise, descriptive `snake_case` slug representing the feature, fix, or topic of the session/branch (e.g. `session_discovery_and_safe_record`, `note_deletion_and_filtering`, `claude_compatibility`).
+
+2. **Execute Export with `--commit` and `--slug`:**
+   ```bash
+   # Standard branch export against upstream base:
+   git prompt-log export --commit --slug "<descriptive_slug>"
+
+   # Explicit range (e.g. past sessions or specific commit range):
+   git prompt-log export --range "<range>" --commit --slug "<descriptive_slug>"
+   ```
+   * The `--commit` flag automatically stages `prompts/YYYY_MM_DD_HHMMSS_<slug>.md` and creates a Git commit with the subject `prompts: Export prompt log for <slug with spaces>`.
+   * Do not run a separate `git commit` or stage files manually after using `--commit`.
+
+3. **Prerequisite Check (Missing Notes):**
+   * If commits in the target range lack prompt notes (e.g. human commits or commits made before hooks were active), run `git prompt-log record <range>` to attach prompt notes to the commits first before exporting.
 
 ### Upstream Re-hydration (After Merge)
 When asked to land, import, or re-hydrate notes on `main` after a PR merge:
@@ -172,7 +186,7 @@ When asked how to inspect, exclude, or retract specific prompts:
 
 ### Sharing Notes (Export & Import Only)
 Prompt notes must never be pushed directly via `refs/notes/*`. Prompt notes are shared across remotes exclusively via markdown logs:
-1. Export on branch before PR: `git prompt-log export --commit`
+1. Export on branch before PR: `git prompt-log export --commit --slug "<descriptive_slug>"`
 2. Land and re-hydrate on target branch: `git prompt-log import <path>`
 
 ### Deinitialize or Uninstall
