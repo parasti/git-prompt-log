@@ -1070,7 +1070,7 @@ class AntigravityAdapter(BaseIngestionAdapter):
                 except Exception:
                     continue
 
-        candidates.sort(key=lambda x: (1 if x["is_active"] else 0, x["score"], x["mtime"]), reverse=True)
+        candidates.sort(key=lambda x: (1 if x["is_active"] else 0, x["score"], x["mtime"]))
         return candidates
 
     def get_agent_identity(
@@ -1638,7 +1638,7 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
                 except Exception:
                     continue
 
-        candidates.sort(key=lambda x: (1 if x["is_active"] else 0, x["score"], x["mtime"]), reverse=True)
+        candidates.sort(key=lambda x: (1 if x["is_active"] else 0, x["score"], x["mtime"]))
         return candidates
 
 
@@ -1836,7 +1836,7 @@ class AdapterRegistry:
                     results.append(sess)
                     seen_sids.add(sess["session_id"])
 
-        results.sort(key=lambda x: (1 if x["is_active"] else 0, x["score"], x["mtime"]), reverse=True)
+        results.sort(key=lambda x: (1 if x["is_active"] else 0, x["score"], x["mtime"]))
         return results
 
 

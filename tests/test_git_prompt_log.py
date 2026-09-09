@@ -3034,6 +3034,7 @@ class TestCandidateSessionDiscoveryAndSafeRangeRecord(unittest.TestCase):
             self.assertIn(self.session2, res.stdout)
             self.assertIn("First prompt in session 1", res.stdout)
             self.assertIn("Feature prompt in session 2", res.stdout)
+            self.assertLess(res.stdout.index(self.session1), res.stdout.index(self.session2))
 
     def test_session_list_sessions_shows_active_marker(self):
         script_path = str(bin_path)
@@ -3042,6 +3043,20 @@ class TestCandidateSessionDiscoveryAndSafeRangeRecord(unittest.TestCase):
         res = subprocess.run(["python3", script_path, "session", "list-sessions"], cwd=self.repo_dir, env=env, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn(f"{self.session1} [ACTIVE]", res.stdout)
+        self.assertLess(res.stdout.index(self.session2), res.stdout.index(self.session1))
+
+    def test_candidate_sessions_api_orders_most_recent_at_bottom(self):
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            antigravity_adapter = gpn.REGISTRY.get("antigravity")
+            sessions = antigravity_adapter.list_candidate_sessions(repo_root=self.repo_dir)
+            sids = [s["session_id"] for s in sessions]
+            self.assertIn(self.session1, sids)
+            self.assertIn(self.session2, sids)
+            self.assertLess(sids.index(self.session1), sids.index(self.session2))
+
+            reg_sessions = gpn.REGISTRY.list_candidate_sessions(repo_root=self.repo_dir)
+            reg_sids = [s["session_id"] for s in reg_sessions]
+            self.assertLess(reg_sids.index(self.session1), reg_sids.index(self.session2))
 
     def test_record_range_skips_unprompted_commit(self):
         script_path = str(bin_path)
