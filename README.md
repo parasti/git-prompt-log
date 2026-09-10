@@ -31,12 +31,12 @@ git prompt-log import prompts/*.md
 
 # 3. View the commit history with prompt timelines in rich color:
 git prompt-log
-```
 
-You can view the causal prompt on each commit, or pass `--prompt-full` to view the cumulative prompt history:
+# Pass standard git log options (e.g. limit commit count):
+git prompt-log -n 5
 
-```bash
-git prompt-log log --prompt-full
+# View cumulative prompt history per commit:
+git prompt-log --prompt-full
 ```
 
 #### Try Live Prompt Recording
@@ -76,6 +76,41 @@ In practice, **you will almost never run `record` yourself**. Once enabled in a 
    # Standard git log also includes prompt notes:
    git log -n 1
    ```
+
+### Inspecting Commits & Prompt History
+
+Invoking `git prompt-log` without arguments defaults to streaming `git log` interleaved with formatted prompt blocks:
+
+```bash
+# Stream git log with prompt notes:
+git prompt-log
+
+# Forward arbitrary native git log options and revision ranges:
+git prompt-log -n 5
+git prompt-log -p
+git prompt-log --stat
+git prompt-log --graph main..HEAD
+
+# View cumulative prompt history instead of only the active prompt:
+git prompt-log --prompt-full
+# or explicit subcommand:
+git prompt-log log --prompt-full
+
+# Inspect a single commit's prompt note in isolation:
+git prompt-log show HEAD
+
+# Interleave session prompts and branch commits into a unified chronological timeline:
+git prompt-log timeline
+git prompt-log timeline main..HEAD
+```
+
+#### Pager Control
+`git prompt-log` streams output through Git's configured pager (`less -FRX`, `GIT_PAGER`, or `core.pager`). When piping or redirecting output (e.g. `git prompt-log | head`), paging is disabled automatically. To bypass the pager explicitly in interactive terminals, use Git's native flag or environment:
+```bash
+git --no-pager prompt-log
+GIT_PAGER=cat git prompt-log
+```
+*(No custom `--no-pager` flag is used, ensuring 100% compatibility with native Git arguments.)*
 
 ### Pull Requests & Collaboration (Export & Import)
 

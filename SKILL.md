@@ -21,6 +21,7 @@ When answering questions about the tool, use this technical foundation:
 * **Automatic Recording:** During `git prompt-log init`, a `.git/hooks/post-commit` hook is installed. When an agent creates or amends a commit, this hook automatically detects the active session and records the prompt note on `HEAD`. For human commits, the hook is strictly a no-op.
 * **Rebase & Squash Reconciliation:** A `.git/hooks/post-rewrite` hook is installed. When Git rewrites commits (`rebase`, `squash`, `fixup`, `commit --amend`), the hook automatically merges, deduplicates, and preserves prompt notes on the resulting commits.
 * **Note Format:** Notes store session headers (`Assistant-Session`, `Assistant-Harness`, `Assistant-Model`, `Assistant-Recorded`) followed by `Assistant-Prompts:` listed in reverse chronological order (causal prompt first; tool-mediated user inputs are prefixed with `[tool:<name>]`). Squashed commits across different sessions separate each session with `---`.
+* **Streaming Log Wrapper & Shorthand:** `git prompt-log` (shorthand for `git prompt-log log`) acts as a streaming wrapper around `git log`, rendering commits with formatted prompt blocks and unprompted commit placeholders (`Prompt: none recorded`). Arbitrary native `git log` options (`-n`, `-p`, `--stat`, `--graph`, revision ranges) are forwarded directly to Git, custom prompt options are namespaced (`--prompt-full`, `--prompt-ref`), and Git's native pager environment is respected.
 * **Sharing Prompt Notes:** Notes are never pushed directly via git notes refs (`refs/notes/*`). Prompt notes are shared across repositories exclusively via markdown logs (`export` on the branch, and `import` upon landing).
 
 ---
@@ -38,17 +39,41 @@ git prompt-log init
 * `--no-post-commit`: Skips installing the automatic post-commit hook.
 * `-H, --harness <name>`: Explicitly configure default assistant harness (`antigravity`, `claude`, `manual`).
 
-### Inspect Notes
-When asked to view or check prompt notes:
+### Inspect Notes & Commit Log History
+When asked to view or check prompt notes or commit history:
 ```bash
+# View commit history annotated with active steering prompts (shorthand for 'git prompt-log log')
+git prompt-log
+
+# Forward arbitrary native git log options and revision ranges directly
+git prompt-log -n 5
+git prompt-log -n 2 -p
+git prompt-log --stat
+git prompt-log --graph main..HEAD
+
+# View full cumulative prompts per commit (instead of just active causal prompt)
+git prompt-log --prompt-full
+# or:
+git prompt-log log --prompt-full
+# alias: --prompts-full
+
+# Target a custom prompt notes ref
+git prompt-log --prompt-ref refs/notes/custom-prompts
+
+# Disable pager using Git's native flag or environment (custom --no-pager is intentionally not used)
+git --no-pager prompt-log
+GIT_PAGER=cat git prompt-log
+
 # Formatted view of the note on HEAD (or any commit hash/ref)
 git prompt-log show HEAD
 
-# Or using native git log
-git log -n 1
+# Interleave session prompts and branch commits into a unified chronological timeline
+git prompt-log timeline
+git prompt-log timeline main..HEAD
+# (alias for 'git prompt-log session --commits [range]')
 
-# View commit history annotated with active steering prompts
-git prompt-log
+# Standard git log also displays prompt notes natively
+git log -n 1
 ```
 
 ### Export Prompt Notes for Pull Requests
