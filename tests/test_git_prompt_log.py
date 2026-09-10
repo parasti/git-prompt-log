@@ -2042,16 +2042,18 @@ class TestIngestionAdapters(unittest.TestCase):
         self.assertIn("feat: prompted commit", res_log.stdout)
         self.assertIn("Steering prompt for commit 2", res_log.stdout)
         self.assertIn("chore: unprompted commit", res_log.stdout)
-        self.assertIn("no prompts recorded", res_log.stdout)
+        self.assertIn("none recorded", res_log.stdout)
 
-        # Check structure: unprompted commit has placeholder right below it
+        # Check structure: unprompted commit has Prompt: none recorded in its block
         lines = res_log.stdout.splitlines()
         found_unprompted = False
         found_placeholder = False
         for i, line in enumerate(lines):
             if "chore: unprompted commit" in line:
                 found_unprompted = True
-                self.assertEqual(lines[i + 1].strip(), "no prompts recorded")
+                block = "\n".join(lines[i:i + 6])
+                self.assertIn("Prompt:", block)
+                self.assertIn("none recorded", block)
                 found_placeholder = True
                 break
         self.assertTrue(found_unprompted)
@@ -3098,5 +3100,230 @@ class TestCandidateSessionDiscoveryAndSafeRangeRecord(unittest.TestCase):
         self.assertIn("No prompts found prior to commit date", res.stderr)
 
 
+class TestGitPromptLogStreaming(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.repo_dir = Path(self.tmp_dir.name) / "repo"
+        self.repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repo_dir, check=True)
+
+        self.env = os.environ.copy()
+        for k in ("AGY_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID", "CLAUDE_CODE_SESSION_ID", "PROMPT_LOG_HARNESS"):
+            self.env.pop(k, None)
+
+        self.script_path = str(bin_path)
+
+        # Create 5 commits with notes
+        for i in range(1, 6):
+            f = self.repo_dir / f"file_{i}.txt"
+            f.write_text(f"content {i}")
+            subprocess.run(["git", "add", f"file_{i}.txt"], cwd=self.repo_dir, check=True)
+            subprocess.run(["git", "commit", "-m", f"feat: commit {i}"], cwd=self.repo_dir, check=True)
+            subprocess.run(
+                ["python3", self.script_path, "record", "-m", f"Prompt for commit {i}", "-c", "HEAD"],
+                cwd=self.repo_dir,
+                check=True,
+                capture_output=True,
+            )
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def test_log_max_count(self):
+        res = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "2", "--no-pager"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commit_headers = [line for line in res.stdout.splitlines() if line.startswith("commit ")]
+        self.assertEqual(len(commit_headers), 2)
+        self.assertIn("feat: commit 5", res.stdout)
+        self.assertIn("feat: commit 4", res.stdout)
+        self.assertNotIn("feat: commit 3", res.stdout)
+
+    def test_log_range(self):
+        res = subprocess.run(
+            ["python3", self.script_path, "log", "HEAD~2..HEAD", "--no-pager"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commit_headers = [line for line in res.stdout.splitlines() if line.startswith("commit ")]
+        self.assertEqual(len(commit_headers), 2)
+        self.assertIn("feat: commit 5", res.stdout)
+        self.assertIn("feat: commit 4", res.stdout)
+        self.assertNotIn("feat: commit 3", res.stdout)
+
+    def test_log_full_displays_all_prompts(self):
+        # Attach a second prompt to HEAD
+        note_content = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        notes = gpn.parse_notes(note_content)
+        notes[0].prompts.append(gpn.PromptEntry("2026-09-04 10:00:00 UTC", "Second earlier prompt"))
+        gpn.write_note_content("HEAD", gpn.serialize_notes(notes), repo_root=self.repo_dir)
+
+        # Standard log only shows active prompt
+        res_standard = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "1", "--no-pager"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("Prompt for commit 5", res_standard.stdout)
+        self.assertNotIn("Second earlier prompt", res_standard.stdout)
+
+        # Full log shows all prompts with namespaced --prompt-full
+        res_full = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "1", "--prompt-full", "--no-pager"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("Prompt for commit 5", res_full.stdout)
+        self.assertIn("Second earlier prompt", res_full.stdout)
+
+        # Alias --prompts-full also works
+        res_full_alias = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "1", "--prompts-full", "--no-pager"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("Prompt for commit 5", res_full_alias.stdout)
+        self.assertIn("Second earlier prompt", res_full_alias.stdout)
+
+    def test_log_forwarded_flags_full_history(self):
+        # Verify git log's native --full-history is not intercepted or collided with
+        res = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "1", "--full-history", "--no-pager"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("commit ", res.stdout)
+        self.assertIn("feat: commit 5", res.stdout)
+        self.assertIn("Prompt for commit 5", res.stdout)
+
+    def test_log_prompt_ref(self):
+        # Attach note on custom ref
+        custom_ref = "refs/notes/custom-prompts"
+        subprocess.run(
+            ["python3", self.script_path, "record", "-m", "Custom ref prompt", "-c", "HEAD", f"--ref={custom_ref}"],
+            cwd=self.repo_dir,
+            check=True,
+            capture_output=True,
+        )
+        res = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "1", f"--prompt-ref={custom_ref}", "--no-pager"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("Custom ref prompt", res.stdout)
+
+    def test_log_broken_pipe_handling(self):
+        # Pipe into head -n 2; should exit with code 0 and no BrokenPipeError traceback
+        proc_log = subprocess.Popen(
+            ["python3", self.script_path, "log"],
+            cwd=self.repo_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        proc_head = subprocess.Popen(
+            ["head", "-n", "2"],
+            stdin=proc_log.stdout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        proc_log.stdout.close()  # Allow proc_log to receive SIGPIPE if head exits
+        head_out, _ = proc_head.communicate()
+        _, log_err = proc_log.communicate()
+
+        self.assertIn("commit ", head_out)
+        self.assertNotIn("BrokenPipeError", log_err)
+        self.assertNotIn("Traceback", log_err)
+
+    def test_log_forwarded_flags_stat(self):
+        res = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "1", "--stat", "--no-pager"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("file_5.txt", res.stdout)
+        self.assertIn("1 insertion(+)", res.stdout)
+        self.assertIn("Prompt for commit 5", res.stdout)
+
+    def test_log_forwarded_flags_graph(self):
+        res = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "2", "--graph", "--no-pager"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertTrue(any(line.startswith("* commit ") for line in res.stdout.splitlines()))
+        self.assertIn("feat: commit 5", res.stdout)
+        self.assertIn("feat: commit 4", res.stdout)
+        self.assertIn("Prompt for commit 5", res.stdout)
+
+    def test_log_forwarded_flags_patch(self):
+        res = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "1", "-p", "--no-pager"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("diff --git a/file_5.txt b/file_5.txt", res.stdout)
+        self.assertIn("+content 5", res.stdout)
+        self.assertIn("Prompt for commit 5", res.stdout)
+
+    def test_log_avoids_n_plus_one_note_queries(self):
+        calls = []
+        orig_get_note = gpn.get_note_content
+
+        def tracking_get_note(*args, **kwargs):
+            calls.append(args)
+            return orig_get_note(*args, **kwargs)
+
+        gpn.get_note_content = tracking_get_note
+        try:
+            import argparse
+            args = argparse.Namespace(
+                range="HEAD",
+                ref=gpn.DEFAULT_NOTES_REF,
+                max_count=None,
+                full=False,
+                color="never",
+                no_pager=True,
+            )
+            # Invoke cmd_log directly
+            cwd_before = os.getcwd()
+            os.chdir(self.repo_dir)
+            try:
+                gpn.cmd_log(args)
+            finally:
+                os.chdir(cwd_before)
+
+            # In the optimized implementation, get_note_content should NOT be called per commit
+            self.assertEqual(len(calls), 0, f"Expected 0 get_note_content calls, got {len(calls)}")
+        finally:
+            gpn.get_note_content = orig_get_note
+
+
 if __name__ == "__main__":
     unittest.main()
+

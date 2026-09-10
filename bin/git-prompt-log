@@ -19,7 +19,7 @@ import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 
 DEFAULT_NOTES_REF = "refs/notes/commits"
@@ -2606,95 +2606,332 @@ def should_use_color(color_arg: str = "auto", repo_root: Optional[Path] = None) 
     return True
 
 
+class StreamingPager:
+    """Streams text output through the configured Git/system pager or directly to stdout."""
+
+    def __init__(self, repo_root: Optional[Path] = None, no_pager: bool = False):
+        self.repo_root = repo_root
+        self.no_pager = no_pager
+        self.proc: Optional[subprocess.Popen] = None
+        self.stream = sys.stdout
+
+    def __enter__(self):
+        if self.no_pager or not sys.stdout.isatty():
+            return self
+
+        pager = os.environ.get("GIT_PAGER")
+        if not pager and self.repo_root:
+            c, out, _ = run_git(["var", "GIT_PAGER"], repo_root=self.repo_root)
+            if c == 0 and out.strip():
+                pager = out.strip()
+        if not pager:
+            pager = os.environ.get("PAGER", "less")
+
+        if pager in ("cat", ""):
+            return self
+
+        env = os.environ.copy()
+        if "LESS" not in env:
+            env["LESS"] = "FRX"
+        if "LV" not in env:
+            env["LV"] = "-c"
+
+        try:
+            self.proc = subprocess.Popen(
+                pager,
+                shell=True,
+                stdin=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                env=env,
+            )
+            self.stream = self.proc.stdin
+        except Exception:
+            self.proc = None
+            self.stream = sys.stdout
+        return self
+
+    def write(self, text: str):
+        try:
+            self.stream.write(text)
+            self.stream.flush()
+        except (BrokenPipeError, IOError):
+            if self.stream is sys.stdout:
+                try:
+                    devnull = os.open(os.devnull, os.O_WRONLY)
+                    os.dup2(devnull, sys.stdout.fileno())
+                except Exception:
+                    pass
+            raise BrokenPipeError
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.proc:
+            try:
+                if self.proc.stdin:
+                    self.proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                self.proc.wait()
+            except (BrokenPipeError, KeyboardInterrupt):
+                pass
+            self.proc = None
+        return exc_type in (BrokenPipeError, KeyboardInterrupt)
+
+
 def pipe_to_pager(text: str, repo_root: Optional[Path] = None):
     """Pipes text output through the configured Git/system pager."""
-    if not sys.stdout.isatty():
-        sys.stdout.write(text)
-        return
-
-    pager = os.environ.get("GIT_PAGER")
-    if not pager and repo_root:
-        c, out, _ = run_git(["var", "GIT_PAGER"], repo_root=repo_root)
-        if c == 0 and out.strip():
-            pager = out.strip()
-    if not pager:
-        pager = os.environ.get("PAGER", "less")
-
-    if pager in ("cat", ""):
-        sys.stdout.write(text)
-        return
-
-    env = os.environ.copy()
-    if "LESS" not in env:
-        env["LESS"] = "FRX"
-    if "LV" not in env:
-        env["LV"] = "-c"
-
-    try:
-        proc = subprocess.Popen(pager, shell=True, stdin=subprocess.PIPE, text=True, encoding="utf-8", env=env)
-        try:
-            proc.communicate(input=text)
-        except (BrokenPipeError, KeyboardInterrupt):
-            pass
-    except Exception:
-        sys.stdout.write(text)
+    with StreamingPager(repo_root=repo_root) as pager:
+        pager.write(text)
 
 
-def cmd_log(args: argparse.Namespace) -> int:
-    """Displays commits in range with their active steering prompts."""
-    repo_root = get_repo_root()
-    commit_range = getattr(args, "range", None) or "HEAD"
-    git_cmd = ["log", "--format=%H %s"]
-    if getattr(args, "max_count", None):
-        git_cmd.extend(["-n", str(args.max_count)])
-    git_cmd.append(commit_range)
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
-    code, log_out, _ = run_git(git_cmd, repo_root=repo_root)
-    if code != 0 or not log_out.strip():
-        limit = getattr(args, "max_count", 10) or 10
-        code, log_out, _ = run_git(["log", "--format=%H %s", "-n", str(limit), "HEAD"], repo_root=repo_root)
-        if code != 0 or not log_out.strip():
-            return 0
 
-    use_color = should_use_color(getattr(args, "color", "auto"), repo_root=repo_root)
-    c_yellow = "\033[33m" if use_color else ""
+def strip_ansi(text: str) -> str:
+    """Strips ANSI escape sequences from a string."""
+    return ANSI_ESCAPE_RE.sub("", text)
+
+
+COMMIT_LINE_RE = re.compile(r"^([|*\\/ _-]*)(commit\s+[0-9a-f]{7,40})")
+NOTES_HEADER_RE = re.compile(r"^([|*\\/ _-]*)(Notes(?: \([^)]+\))?:)\s*$")
+
+
+def format_prompt_note_block(
+    raw_note: str,
+    graph_prefix: str = "",
+    full: bool = False,
+    use_color: bool = False,
+    leading_blank: bool = False,
+) -> str:
+    """Formats a git note into a clean, human-readable prompt block."""
+    notes = parse_notes(raw_note) if raw_note else []
     c_bold = "\033[1m" if use_color else ""
     c_cyan = "\033[36m" if use_color else ""
     c_reset = "\033[0m" if use_color else ""
 
-    lines = []
-    commits = [line.split(" ", 1) for line in log_out.splitlines() if line.strip()]
-    for parts in commits:
-        c_hash = parts[0]
-        subj = parts[1] if len(parts) > 1 else ""
-        note_raw = get_note_content(c_hash, ref=args.ref, repo_root=repo_root)
-        lines.append(f"* {c_yellow}{c_hash[:8]}{c_reset} {c_bold}{subj}{c_reset}")
-        has_prompts = False
-        if note_raw:
-            notes = parse_notes(note_raw)
-            if notes and notes[0].prompts:
-                has_prompts = True
-                if getattr(args, "full", False):
-                    for p in notes[0].prompts:
-                        indented = p.text.replace("\n", "\n    ")
-                        lines.append(f"  {c_cyan}[{p.timestamp}]{c_reset} {indented}")
-                else:
-                    active_p = max(notes[0].prompts, key=lambda p: parse_timestamp_sort_key(p.timestamp))
-                    indented = active_p.text.replace("\n", "\n    ")
-                    lines.append(f"  {c_cyan}[{active_p.timestamp}]{c_reset} {indented}")
-        if not has_prompts:
-            lines.append("  no prompts recorded")
-        lines.append("")
+    blank = f"{graph_prefix}\n" if leading_blank else ""
+    if not notes or not any(n.prompts for n in notes):
+        return f"{blank}{graph_prefix}{c_bold}Prompt:{c_reset}\n{graph_prefix}    none recorded\n{graph_prefix}\n"
 
-    full_output = "\n".join(lines)
-    if not full_output.endswith("\n"):
-        full_output += "\n"
-
-    no_pager = getattr(args, "no_pager", False) or getattr(args, "global_no_pager", False)
-    if no_pager:
-        sys.stdout.write(full_output)
+    out = [blank] if blank else []
+    dot = " \u00b7 "
+    if not full:
+        all_prompts = [(n, p) for n in notes for p in n.prompts]
+        n, active_p = max(all_prompts, key=lambda pair: parse_timestamp_sort_key(pair[1].timestamp))
+        header_parts = [p for p in (n.harness, n.model) if p]
+        hdr = f" ({dot.join(header_parts)})" if header_parts else ""
+        out.append(f"{graph_prefix}{c_bold}Prompt{hdr}:{c_reset}\n")
+        indented = active_p.text.replace("\n", f"\n{graph_prefix}    ")
+        out.append(f"{graph_prefix}    {c_cyan}[{active_p.timestamp}]{c_reset} {indented}\n{graph_prefix}\n")
     else:
-        pipe_to_pager(full_output, repo_root=repo_root)
+        for n in notes:
+            header_parts = [p for p in (n.harness, n.model) if p]
+            hdr = f" ({dot.join(header_parts)})" if header_parts else ""
+            out.append(f"{graph_prefix}{c_bold}Prompts{hdr}:{c_reset}\n")
+            for p in n.prompts:
+                indented = p.text.replace("\n", f"\n{graph_prefix}    ")
+                out.append(f"{graph_prefix}    {c_cyan}[{p.timestamp}]{c_reset} {indented}\n")
+            out.append(f"{graph_prefix}\n")
+    return "".join(out)
+
+
+def stream_git_log_lines(
+    git_cmd: List[str],
+    repo_root: Optional[Path] = None,
+    full: bool = False,
+    use_color: bool = False,
+) -> Iterator[str]:
+    """
+    Executes git log and yields filtered output lines, replacing Notes:
+    sections with formatted prompt blocks and adding placeholders for unprompted commits.
+    """
+    cwd = str(repo_root) if repo_root else None
+    proc = subprocess.Popen(
+        ["git"] + git_cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+
+    in_commit = False
+    in_message = False
+    has_notes = False
+    in_notes = False
+    notes_lines = []
+    current_graph_prefix = ""
+    last_line_blank = False
+
+    try:
+        if proc.stdout:
+            for line in proc.stdout:
+                raw_line = line
+                clean_line = strip_ansi(line)
+
+                m_commit = COMMIT_LINE_RE.match(clean_line)
+                if m_commit:
+                    if in_commit and not has_notes and in_message:
+                        yield format_prompt_note_block("", current_graph_prefix, full=full, use_color=use_color, leading_blank=not last_line_blank)
+                        last_line_blank = True
+                    elif in_notes:
+                        yield format_prompt_note_block("".join(notes_lines), current_graph_prefix, full=full, use_color=use_color, leading_blank=False)
+                        in_notes = False
+                        notes_lines = []
+                        last_line_blank = True
+
+                    in_commit = True
+                    in_message = False
+                    has_notes = False
+                    in_notes = False
+                    notes_lines = []
+                    current_graph_prefix = m_commit.group(1)
+                    last_line_blank = False
+                    yield raw_line
+                    continue
+
+                if not in_commit:
+                    last_line_blank = (clean_line.strip() == "")
+                    yield raw_line
+                    continue
+
+                m_notes = NOTES_HEADER_RE.match(clean_line)
+                if m_notes:
+                    in_notes = True
+                    has_notes = True
+                    current_graph_prefix = m_notes.group(1)
+                    notes_lines = []
+                    continue
+
+                if in_notes:
+                    prefix = current_graph_prefix + "    "
+                    clean_graph = current_graph_prefix.strip()
+                    if clean_line.startswith(prefix) or (clean_graph and clean_line.strip() == clean_graph) or (not clean_graph and clean_line.strip() == ""):
+                        if clean_line.startswith(prefix):
+                            notes_lines.append(clean_line[len(prefix):])
+                        else:
+                            notes_lines.append("\n")
+                        continue
+                    else:
+                        in_notes = False
+                        yield format_prompt_note_block("".join(notes_lines), current_graph_prefix, full=full, use_color=use_color, leading_blank=False)
+                        notes_lines = []
+                        last_line_blank = True
+
+                clean_graph = current_graph_prefix.strip()
+                graph_prefix_len = len(current_graph_prefix)
+                after_graph = clean_line[graph_prefix_len:] if clean_line.startswith(current_graph_prefix) else clean_line
+
+                if not in_message:
+                    # First blank line after headers marks the start of the message
+                    if after_graph.strip() == "":
+                        in_message = True
+                else:
+                    if not has_notes and not in_notes:
+                        if after_graph.startswith("diff --git ") or (after_graph.startswith(" ") and "|" in after_graph) or after_graph.startswith("--- "):
+                            yield format_prompt_note_block("", current_graph_prefix, full=full, use_color=use_color, leading_blank=not last_line_blank)
+                            has_notes = True
+                            last_line_blank = True
+
+                last_line_blank = (clean_line.strip() == clean_graph)
+                yield raw_line
+
+        if in_notes:
+            yield format_prompt_note_block("".join(notes_lines), current_graph_prefix, full=full, use_color=use_color, leading_blank=False)
+        elif in_commit and not has_notes and in_message:
+            yield format_prompt_note_block("", current_graph_prefix, full=full, use_color=use_color, leading_blank=not last_line_blank)
+
+    finally:
+        try:
+            if proc.stdout:
+                proc.stdout.close()
+            if proc.stderr:
+                proc.stderr.close()
+            if proc.poll() is None:
+                proc.terminate()
+            proc.wait()
+        except Exception:
+            pass
+
+
+def resolve_color_flag(forwarded_args: List[str]) -> Optional[str]:
+    """Inspects forwarded git arguments for the last color option (--color, --color=<when>, --no-color)."""
+    color_choice = None
+    i = 0
+    while i < len(forwarded_args):
+        arg = forwarded_args[i]
+        if arg == "--no-color":
+            color_choice = "never"
+        elif arg == "--color":
+            if i + 1 < len(forwarded_args) and forwarded_args[i + 1] in ("always", "never", "auto"):
+                color_choice = forwarded_args[i + 1]
+                i += 1
+            else:
+                color_choice = "always"
+        elif arg.startswith("--color="):
+            color_choice = arg.split("=", 1)[1]
+        i += 1
+    return color_choice
+
+
+def cmd_log(args: argparse.Namespace, git_args: Optional[List[str]] = None) -> int:
+    """Displays commits with formatted steering prompts, wrapping git log."""
+    repo_root = get_repo_root()
+    ref = getattr(args, "prompt_ref", None) or getattr(args, "ref", DEFAULT_NOTES_REF) or DEFAULT_NOTES_REF
+    full = getattr(args, "prompt_full", False) or getattr(args, "full", False)
+    no_pager = getattr(args, "no_pager", False) or getattr(args, "global_no_pager", False)
+
+    forwarded: List[str] = list(git_args) if git_args is not None else []
+    if git_args is None:
+        if getattr(args, "max_count", None):
+            forwarded.extend(["-n", str(args.max_count)])
+        if getattr(args, "range", None):
+            forwarded.append(args.range)
+        if getattr(args, "git_args", None):
+            forwarded.extend(args.git_args)
+
+    color_flag = resolve_color_flag(forwarded)
+    if color_flag is None:
+        color_flag = getattr(args, "color", None)
+
+    if color_flag == "never":
+        use_color = False
+    elif color_flag == "always":
+        use_color = True
+    else:
+        use_color = should_use_color(color_flag or "auto", repo_root=repo_root)
+
+    git_cmd = ["log", "--no-standard-notes", f"--notes={ref}"]
+
+    # Adjust or inject color flag for git log to match terminal/pager expectations
+    has_color_flag = any(arg == "--no-color" or arg == "--color" or arg.startswith("--color=") for arg in forwarded)
+    if not has_color_flag:
+        if use_color:
+            git_cmd.append("--color=always")
+        else:
+            git_cmd.append("--color=never")
+    else:
+        # If --color=auto was passed, git log writing to pipe would disable color;
+        # replace --color=auto with explicit always/never based on use_color.
+        adjusted_forwarded = []
+        for arg in forwarded:
+            if arg == "--color=auto":
+                adjusted_forwarded.append("--color=always" if use_color else "--color=never")
+            else:
+                adjusted_forwarded.append(arg)
+        forwarded = adjusted_forwarded
+
+    git_cmd.extend(forwarded)
+
+    try:
+        with StreamingPager(repo_root=repo_root, no_pager=no_pager) as pager:
+            for chunk in stream_git_log_lines(git_cmd, repo_root=repo_root, full=full, use_color=use_color):
+                pager.write(chunk)
+    except (BrokenPipeError, KeyboardInterrupt):
+        return 0
 
     return 0
 
@@ -3782,10 +4019,32 @@ def main():
     p_show.add_argument("--incremental", "-i", action="store_true", help="Display only incremental prompts since parent commit")
 
     # log
-    p_log = subparsers.add_parser("log", help="Display commits with their steering prompts (default)", parents=[base_parser])
-    p_log.add_argument("range", nargs="?", help="Commit range (default: detected branch range)")
-    p_log.add_argument("-n", "--max-count", type=int, dest="max_count", help="Limit number of commits to display")
-    p_log.add_argument("--full", action="store_true", help="Display full cumulative prompts instead of active prompt")
+    p_log = subparsers.add_parser(
+        "log",
+        help="Display commits with their steering prompts (default)",
+        description="Display commits with formatted steering prompt notes. All standard git log options are supported and forwarded.",
+    )
+    p_log.add_argument(
+        "--prompt-full",
+        "--prompts-full",
+        dest="prompt_full",
+        action="store_true",
+        help="Display full cumulative prompts instead of active prompt",
+    )
+    p_log.add_argument(
+        "--prompt-ref",
+        "--prompts-ref",
+        dest="prompt_ref",
+        help=f"Git notes reference namespace for prompts (default: {DEFAULT_NOTES_REF})",
+    )
+    p_log.add_argument(
+        "--no-pager",
+        "--prompt-no-pager",
+        dest="no_pager",
+        action="store_true",
+        help="Do not pipe output into a pager",
+    )
+    p_log.add_argument("git_args", nargs="*", help="Options and revision ranges forwarded to git log")
 
     # edit
     p_edit = subparsers.add_parser("edit", help="Edit prompt note on a commit in $EDITOR", parents=[base_parser])
@@ -3875,6 +4134,22 @@ def main():
         default=None,
         help="Interleave session prompts and branch commits into a unified timeline (optional range e.g. main..HEAD)",
     )
+
+    argv = sys.argv[1:]
+    if "log" in argv:
+        idx = argv.index("log")
+        pre_args = argv[:idx]
+        post_args = argv[idx + 1:]
+        if "-h" in post_args or "--help" in post_args:
+            p_log.print_help()
+            sys.exit(0)
+        log_opt_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+        log_opt_parser.add_argument("--prompt-ref", "--prompts-ref", dest="prompt_ref", default=None)
+        log_opt_parser.add_argument("--no-pager", "--prompt-no-pager", dest="no_pager", action="store_true")
+        log_opt_parser.add_argument("--prompt-full", "--prompts-full", dest="prompt_full", action="store_true")
+        known_args, git_forwarded = log_opt_parser.parse_known_args(pre_args + post_args)
+        known_args.command = "log"
+        sys.exit(cmd_log(known_args, git_args=git_forwarded))
 
     args = parser.parse_args()
 

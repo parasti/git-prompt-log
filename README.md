@@ -33,10 +33,10 @@ git prompt-log import prompts/*.md
 git prompt-log
 ```
 
-You can view the causal prompt on each commit, or pass `--full` to view the cumulative prompt history:
+You can view the causal prompt on each commit, or pass `--prompt-full` to view the cumulative prompt history:
 
 ```bash
-git prompt-log log --full
+git prompt-log log --prompt-full
 ```
 
 #### Try Live Prompt Recording
