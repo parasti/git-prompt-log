@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -556,6 +557,8 @@ def clean_user_prompt(content: str) -> str:
     else:
         text = re.split(r"<ADDITIONAL_METADATA>", content, flags=re.DOTALL)[0]
         text = re.split(r"<USER_SETTINGS_CHANGE>", text, flags=re.DOTALL)[0]
+        text = re.sub(r"<system-reminder>.*?</system-reminder>", "", text, flags=re.DOTALL)
+        text = re.split(r"<system-reminder>", text, flags=re.DOTALL)[0]
     return text.strip()
 
 
@@ -565,6 +568,7 @@ INTERACTIVE_TOOL_NAMES = {
     "request_user_input",
     "AskFollowupQuestion",
     "AskUserQuestion",
+    "question",
 }
 
 
@@ -589,6 +593,18 @@ def clean_interactive_tool_response(tool_name: str, content: Any) -> str:
             if k in content and isinstance(content[k], str):
                 return content[k].strip()
         return str(content).strip()
+    if isinstance(content, list):
+        items = []
+        for x in content:
+            if isinstance(x, list):
+                items.extend(str(y).strip() for y in x if y)
+            elif isinstance(x, dict):
+                sub = clean_interactive_tool_response(tool_name, x)
+                if sub:
+                    items.append(sub)
+            elif x:
+                items.append(str(x).strip())
+        return "\n".join(items).strip()
 
     content_str = str(content).strip()
     if (content_str.startswith("{") and content_str.endswith("}")) or (
@@ -1642,6 +1658,526 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
         return candidates
 
 
+class OpencodeAdapter(BaseIngestionAdapter):
+    name = "opencode"
+    display_name = "Opencode"
+
+    def is_active(self, repo_root: Optional[Path] = None) -> bool:
+        if os.environ.get("OPENCODE") == "1":
+            return True
+        if os.environ.get("OPENCODE_PID"):
+            return True
+        if os.environ.get("OPENCODE_SESSION_ID") or os.environ.get("OPENCODE_CONVERSATION_ID"):
+            return True
+        return False
+
+    def detect_session_id(self, repo_root: Optional[Path] = None) -> Optional[str]:
+        env_sid = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get("OPENCODE_CONVERSATION_ID")
+        if env_sid:
+            return env_sid
+
+        repo = repo_root or get_repo_root()
+        if not self.is_active(repo):
+            return None
+
+        candidates = self.list_candidate_sessions(repo_root=repo)
+        if candidates:
+            for c in reversed(candidates):
+                if c.get("is_active"):
+                    return c["session_id"]
+            return candidates[-1]["session_id"]
+        return None
+
+    def get_agent_identity(self, detected_model: Optional[str] = None) -> Tuple[str, str]:
+        harness = "Opencode"
+        try:
+            out = subprocess.check_output(["opencode", "--version"], text=True, stderr=subprocess.DEVNULL).strip()
+            if out:
+                harness = f"Opencode {out}"
+        except Exception:
+            pass
+        return harness, detected_model or "Opencode"
+
+    def _get_db_paths(self, repo_root: Optional[Path] = None) -> List[Path]:
+        candidates: List[Path] = []
+        env_db = os.environ.get("OPENCODE_DB_PATH")
+        if env_db:
+            candidates.append(Path(env_db))
+        env_data = os.environ.get("OPENCODE_DATA_DIR")
+        if env_data:
+            candidates.append(Path(env_data) / "opencode.db")
+        if repo_root:
+            candidates.append(repo_root / ".opencode" / "opencode.db")
+        xdg = os.environ.get("XDG_DATA_HOME")
+        if xdg:
+            candidates.append(Path(xdg) / "opencode" / "opencode.db")
+        else:
+            candidates.append(Path.home() / ".local" / "share" / "opencode" / "opencode.db")
+        candidates.append(Path.home() / "Library" / "Application Support" / "opencode" / "opencode.db")
+        candidates.append(Path.home() / ".opencode" / "opencode.db")
+
+        existing: List[Path] = []
+        for p in candidates:
+            try:
+                if p.exists() and p.is_file() and p not in existing:
+                    existing.append(p)
+            except Exception:
+                continue
+        return existing
+
+    def _get_repo_worktree_paths(self, repo_root: Optional[Path]) -> Set[Path]:
+        paths: Set[Path] = set()
+        if not repo_root:
+            return paths
+        try:
+            paths.add(repo_root)
+            paths.add(repo_root.resolve())
+        except Exception:
+            pass
+        code, out, _ = run_git(["worktree", "list", "--porcelain"], repo_root=repo_root)
+        if code == 0 and out:
+            for line in out.splitlines():
+                if line.startswith("worktree "):
+                    try:
+                        p = Path(line[len("worktree "):].strip())
+                        paths.add(p)
+                        paths.add(p.resolve())
+                    except Exception:
+                        continue
+        return paths
+
+    def _parse_model_identifier(self, raw_model: Any) -> Optional[str]:
+        if not raw_model:
+            return None
+        if isinstance(raw_model, dict):
+            mid = raw_model.get("id") or raw_model.get("modelID") or raw_model.get("name")
+            if mid and raw_model.get("variant"):
+                return f"{mid} ({str(raw_model['variant']).title()})"
+            return str(mid) if mid else None
+        if isinstance(raw_model, str):
+            s = raw_model.strip()
+            if s.startswith("{") and s.endswith("}"):
+                try:
+                    obj = json.loads(s)
+                    return self._parse_model_identifier(obj)
+                except Exception:
+                    pass
+            return s
+        return str(raw_model)
+
+    def _extract_session_from_db(
+        self,
+        db_path: Path,
+        session_id: str,
+        custom_patterns: Optional[List[str]] = None,
+        apply_session_excludes: bool = True,
+        repo_root: Optional[Path] = None,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            uri = db_path.resolve().as_uri() + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+
+            cur.execute("SELECT * FROM session WHERE id = ? OR id LIKE ?", (session_id, f"{session_id}%"))
+            sess = cur.fetchone()
+            if not sess:
+                conn.close()
+                return None
+
+            sid = sess["id"]
+            keys = sess.keys()
+            ver = sess["version"] if "version" in keys and sess["version"] else None
+            model_raw = sess["model"] if "model" in keys else None
+            detected_model = self._parse_model_identifier(model_raw)
+
+            cur.execute(
+                """
+                SELECT m.id as msg_id, m.time_created as msg_time, m.data as msg_data,
+                       p.id as part_id, p.time_created as part_time, p.data as part_data
+                FROM message m
+                JOIN part p ON p.message_id = m.id
+                WHERE m.session_id = ?
+                ORDER BY m.time_created ASC, p.time_created ASC
+                """,
+                (sid,),
+            )
+            rows = cur.fetchall()
+            conn.close()
+        except Exception:
+            return None
+
+        interactive_tools = get_interactive_tool_names(repo_root=repo_root)
+        raw_turns: List[Tuple[str, str]] = []
+
+        for r in rows:
+            try:
+                m_data = json.loads(r["msg_data"]) if isinstance(r["msg_data"], str) else (r["msg_data"] or {})
+                p_data = json.loads(r["part_data"]) if isinstance(r["part_data"], str) else (r["part_data"] or {})
+            except Exception:
+                continue
+
+            if not detected_model:
+                m_model = m_data.get("model") or m_data.get("modelID")
+                if m_model:
+                    detected_model = self._parse_model_identifier(m_model)
+
+            role = m_data.get("role")
+            p_type = p_data.get("type")
+
+            if role == "user" and p_type == "text":
+                text = p_data.get("text", "")
+                clean = clean_user_prompt(text)
+                if clean:
+                    ts_ms = r["msg_time"] or r["part_time"] or 0
+                    if ts_ms:
+                        ts = datetime.datetime.fromtimestamp(ts_ms / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                    else:
+                        ts = format_utc("")
+                    raw_turns.append((ts, clean))
+            elif p_type == "tool":
+                tool_name = p_data.get("tool")
+                if tool_name in interactive_tools:
+                    state = p_data.get("state") or {}
+                    if state.get("status") == "completed":
+                        out = state.get("output", "")
+                        clean = clean_interactive_tool_response(tool_name, out)
+                        if clean:
+                            time_obj = state.get("time") or {}
+                            ts_ms = time_obj.get("end") or r["part_time"] or r["msg_time"] or 0
+                            if ts_ms:
+                                ts = datetime.datetime.fromtimestamp(ts_ms / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                            else:
+                                ts = format_utc("")
+                            raw_turns.append((ts, f"[tool:{tool_name}] {clean}"))
+
+        if not raw_turns and not detected_model:
+            return None
+
+        prompts = process_prompt_turns(raw_turns)
+        if apply_session_excludes:
+            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root)
+
+        harness, def_model = self.get_agent_identity(detected_model)
+        if ver:
+            harness = f"Opencode {ver}"
+
+        return {
+            "session_id": sid,
+            "detected_model": detected_model or def_model,
+            "harness": harness,
+            "prompts": prompts,
+        }
+
+    def parse_transcript_file(
+        self,
+        transcript_path: Path,
+        custom_patterns: Optional[List[str]] = None,
+        apply_session_excludes: bool = True,
+        repo_root: Optional[Path] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not transcript_path.exists():
+            return None
+
+        if transcript_path.suffix == ".db":
+            try:
+                uri = transcript_path.resolve().as_uri() + "?mode=ro"
+                conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+                cur = conn.cursor()
+                cur.execute("SELECT id FROM session ORDER BY time_updated DESC LIMIT 1")
+                row = cur.fetchone()
+                conn.close()
+                if row:
+                    return self._extract_session_from_db(
+                        transcript_path,
+                        row[0],
+                        custom_patterns=custom_patterns,
+                        apply_session_excludes=apply_session_excludes,
+                        repo_root=repo_root,
+                    )
+            except Exception:
+                pass
+            return None
+
+        try:
+            content = transcript_path.read_text(encoding="utf-8", errors="replace").strip()
+        except Exception:
+            return None
+
+        if not content:
+            return None
+
+        interactive_tools = get_interactive_tool_names(repo_root=repo_root)
+        raw_turns: List[Tuple[str, str]] = []
+        detected_model = None
+        sid = transcript_path.stem
+        ver = None
+
+        try:
+            if content.startswith("{") and content.endswith("}"):
+                data = json.loads(content)
+                if "info" in data and isinstance(data["info"], dict):
+                    info = data["info"]
+                    sid = info.get("id") or sid
+                    ver = info.get("version")
+                    detected_model = self._parse_model_identifier(info.get("model"))
+                    messages = data.get("messages", [])
+                    for msg in messages:
+                        m_info = msg.get("info", {}) if isinstance(msg.get("info"), dict) else msg
+                        role = m_info.get("role")
+                        m_time = m_info.get("time", {}).get("created") if isinstance(m_info.get("time"), dict) else m_info.get("time_created", 0)
+                        parts = msg.get("parts", [])
+                        for p in parts:
+                            p_type = p.get("type")
+                            if role == "user" and p_type == "text":
+                                clean = clean_user_prompt(p.get("text", ""))
+                                if clean:
+                                    ts_ms = m_time or p.get("time_created", 0)
+                                    ts = datetime.datetime.fromtimestamp(ts_ms / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if ts_ms else format_utc("")
+                                    raw_turns.append((ts, clean))
+                            elif p_type == "tool":
+                                tool_name = p.get("tool")
+                                if tool_name in interactive_tools:
+                                    state = p.get("state") or {}
+                                    if state.get("status") == "completed":
+                                        clean = clean_interactive_tool_response(tool_name, state.get("output", ""))
+                                        if clean:
+                                            time_obj = state.get("time") or {}
+                                            ts_ms = time_obj.get("end") or m_time or 0
+                                            ts = datetime.datetime.fromtimestamp(ts_ms / 1000.0, tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC") if ts_ms else format_utc("")
+                                            raw_turns.append((ts, f"[tool:{tool_name}] {clean}"))
+            elif content.startswith("[") and content.endswith("]"):
+                messages = json.loads(content)
+                for msg in messages:
+                    if not isinstance(msg, dict):
+                        continue
+                    role = msg.get("role") or msg.get("info", {}).get("role")
+                    content_val = msg.get("content") or msg.get("text")
+                    ts_val = msg.get("timestamp") or msg.get("time_created") or ""
+                    if role == "user" and content_val:
+                        clean = clean_user_prompt(str(content_val))
+                        if clean:
+                            raw_turns.append((format_utc(str(ts_val)), clean))
+            else:
+                for line in content.splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    role = obj.get("role") or obj.get("info", {}).get("role")
+                    content_val = obj.get("content") or obj.get("text")
+                    ts_val = obj.get("timestamp") or obj.get("time_created") or ""
+                    if role == "user" and content_val:
+                        clean = clean_user_prompt(str(content_val))
+                        if clean:
+                            raw_turns.append((format_utc(str(ts_val)), clean))
+        except Exception:
+            return None
+
+        if not raw_turns and not detected_model:
+            return None
+
+        prompts = process_prompt_turns(raw_turns)
+        if apply_session_excludes:
+            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root)
+
+        harness, def_model = self.get_agent_identity(detected_model)
+        if ver:
+            harness = f"Opencode {ver}"
+
+        return {
+            "session_id": sid,
+            "detected_model": detected_model or def_model,
+            "harness": harness,
+            "prompts": prompts,
+        }
+
+    def find_session_data(
+        self,
+        session_id: Optional[str] = None,
+        repo_root: Optional[Path] = None,
+        max_age_seconds: Optional[int] = None,
+        custom_patterns: Optional[List[str]] = None,
+        apply_session_excludes: bool = True,
+        extra_options: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        repo = repo_root or get_repo_root()
+
+        env_transcript = os.environ.get("OPENCODE_TRANSCRIPT_PATH")
+        if env_transcript and Path(env_transcript).exists():
+            return self.parse_transcript_file(
+                Path(env_transcript),
+                custom_patterns=custom_patterns,
+                apply_session_excludes=apply_session_excludes,
+                repo_root=repo,
+            )
+
+        effective_sid = session_id or self.detect_session_id(repo_root=repo)
+
+        if effective_sid and Path(effective_sid).exists():
+            return self.parse_transcript_file(
+                Path(effective_sid),
+                custom_patterns=custom_patterns,
+                apply_session_excludes=apply_session_excludes,
+                repo_root=repo,
+            )
+
+        db_paths = self._get_db_paths(repo_root=repo)
+        if not db_paths:
+            return None
+
+        now_ts = datetime.datetime.now().timestamp()
+
+        for db_path in db_paths:
+            if effective_sid:
+                parsed = self._extract_session_from_db(
+                    db_path,
+                    effective_sid,
+                    custom_patterns=custom_patterns,
+                    apply_session_excludes=apply_session_excludes,
+                    repo_root=repo,
+                )
+                if parsed and parsed.get("prompts"):
+                    return parsed
+
+            candidates = self.list_candidate_sessions(repo_root=repo)
+            for cand in reversed(candidates):
+                if max_age_seconds is not None and (now_ts - cand["mtime"]) > max_age_seconds:
+                    continue
+                parsed = self._extract_session_from_db(
+                    cand["transcript_path"],
+                    cand["session_id"],
+                    custom_patterns=custom_patterns,
+                    apply_session_excludes=apply_session_excludes,
+                    repo_root=repo,
+                )
+                if parsed and parsed.get("prompts"):
+                    return parsed
+
+        return None
+
+    def list_candidate_sessions(
+        self, repo_root: Optional[Path] = None
+    ) -> List[Dict[str, Any]]:
+        repo = repo_root or get_repo_root()
+        db_paths = self._get_db_paths(repo_root=repo)
+        if not db_paths:
+            return []
+
+        active_sid = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get("OPENCODE_CONVERSATION_ID")
+        worktree_paths = self._get_repo_worktree_paths(repo)
+        repo_paths_str: List[str] = []
+        for p in worktree_paths:
+            s_raw = str(p)
+            if s_raw not in repo_paths_str:
+                repo_paths_str.append(s_raw)
+            try:
+                s_res = str(p.resolve())
+                if s_res not in repo_paths_str:
+                    repo_paths_str.append(s_res)
+            except Exception:
+                pass
+        exact_repo_str = str(repo.resolve()) if repo else ""
+        exact_repo_raw = str(repo) if repo else ""
+
+        candidates: List[Dict[str, Any]] = []
+        seen_sids: Set[str] = set()
+
+        for db_path in db_paths:
+            try:
+                uri = db_path.resolve().as_uri() + "?mode=ro"
+                conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+
+                rows = []
+                if repo_paths_str:
+                    placeholders = ",".join(["?"] * len(repo_paths_str))
+                    query = f"""
+                        SELECT s.id, s.title, s.directory, s.time_created, s.time_updated, s.version, s.model,
+                               MAX(CASE WHEN s.directory = ? OR s.directory = ? THEN 2
+                                        WHEN s.directory IN ({placeholders}) THEN 2
+                                        ELSE 1 END) as score
+                        FROM session s
+                        LEFT JOIN project p ON s.project_id = p.id
+                        LEFT JOIN project_directory pd ON pd.project_id = s.project_id
+                        WHERE s.directory IN ({placeholders})
+                           OR p.worktree IN ({placeholders})
+                           OR pd.directory IN ({placeholders})
+                        GROUP BY s.id
+                        ORDER BY s.time_updated ASC
+                    """
+                    params = [exact_repo_str, exact_repo_raw] + repo_paths_str + repo_paths_str + repo_paths_str + repo_paths_str
+                    try:
+                        cur.execute(query, params)
+                        rows = cur.fetchall()
+                    except Exception:
+                        cur.execute(
+                            f"SELECT *, 2 as score FROM session WHERE directory IN ({placeholders}) ORDER BY time_updated ASC",
+                            repo_paths_str,
+                        )
+                        rows = cur.fetchall()
+                else:
+                    cur.execute("SELECT *, 1 as score FROM session ORDER BY time_updated ASC")
+                    rows = cur.fetchall()
+
+                conn.close()
+            except Exception:
+                continue
+
+            for r in rows:
+                sid = r["id"]
+                if sid in seen_sids:
+                    continue
+
+                parsed = self._extract_session_from_db(
+                    db_path, sid, apply_session_excludes=False, repo_root=repo
+                )
+                if not parsed or not parsed.get("prompts"):
+                    continue
+
+                prompts = parsed["prompts"]
+                harness = parsed["harness"]
+                model = parsed["detected_model"]
+                first_p = prompts[0]
+                last_p = prompts[-1]
+                raw_lines = [l.strip() for l in first_p.text.splitlines() if l.strip()]
+                first_line = raw_lines[0] if raw_lines else ""
+                for l in raw_lines:
+                    if not l.lower().startswith("workspace:") and not l.lower().startswith("work in directory:"):
+                        first_line = l
+                        break
+                if len(first_line) > 80:
+                    first_line = first_line[:77] + "..."
+
+                score = r["score"] if "score" in r.keys() else 1
+                is_active = (sid == active_sid) or (active_sid is None and sid == rows[-1]["id"] and self.is_active(repo))
+                match_scope = "exact worktree" if score >= 2 else "repo"
+                mtime = ((r["time_updated"] if "time_updated" in r.keys() else 0) or (r["time_created"] if "time_created" in r.keys() else 0) or 0) / 1000.0
+
+                candidates.append({
+                    "session_id": sid,
+                    "harness": harness,
+                    "model": model,
+                    "prompt_count": len(prompts),
+                    "first_prompt_text": first_line,
+                    "first_prompt_ts": first_p.timestamp,
+                    "latest_prompt_ts": last_p.timestamp,
+                    "match_scope": match_scope,
+                    "score": score,
+                    "is_active": is_active,
+                    "mtime": mtime,
+                    "transcript_path": db_path,
+                })
+                seen_sids.add(sid)
+
+        candidates.sort(key=lambda x: (1 if x["is_active"] else 0, x["score"], x["mtime"]))
+        return candidates
+
+
 class ManualAdapter(BaseIngestionAdapter):
     name = "manual"
     display_name = "Manual Entry"
@@ -1843,6 +2379,7 @@ class AdapterRegistry:
 REGISTRY = AdapterRegistry()
 REGISTRY.register(AntigravityAdapter())
 REGISTRY.register(ClaudeCodeAdapter())
+REGISTRY.register(OpencodeAdapter())
 REGISTRY.register(ManualAdapter())
 
 
@@ -1961,7 +2498,7 @@ def cmd_harness(args: argparse.Namespace) -> int:
 
     if not configured:
         print("\nTip: To explicitly set your default assistant harness, run:")
-        print("  git prompt-log harness <antigravity|claude|manual>")
+        print("  git prompt-log harness <antigravity|claude|opencode|manual>")
     return 0
 
 
@@ -2071,7 +2608,7 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
 
     extra_options = {"message": message_input}
     harness_input = getattr(args, "harness", None)
-    known_harnesses = {"antigravity", "claude", "manual", "direct", "auto"}
+    known_harnesses = {"antigravity", "claude", "opencode", "manual", "direct", "auto"}
     if harness_input and harness_input.lower() in known_harnesses:
         v = harness_input.lower()
         adapter_name = "manual" if v == "direct" else v
@@ -2307,7 +2844,7 @@ def cmd_record(args: argparse.Namespace) -> int:
 
         if not getattr(args, "delete", False) and getattr(args, "keep_last", None) != 0 and not getattr(args, "dry_run", False):
             harness_input = getattr(args, "harness", None)
-            known_harnesses = {"antigravity", "claude", "manual", "direct", "auto"}
+            known_harnesses = {"antigravity", "claude", "opencode", "manual", "direct", "auto"}
             if harness_input and harness_input.lower() in known_harnesses:
                 v = harness_input.lower()
                 adapter_name = "manual" if v == "direct" else v
@@ -3479,8 +4016,14 @@ def cmd_session(args: argparse.Namespace) -> int:
             if cand.exists():
                 t_path = cand
         if not t_path:
-            sys.stderr.write(f"Session transcript not found for session ID: {session_id}\n")
-            return 1
+            adapter, data = REGISTRY.find_session_data(
+                session_id=session_id, repo_root=repo_root, apply_session_excludes=False
+            )
+            if data:
+                raw_data = data
+            else:
+                sys.stderr.write(f"Session transcript not found for session ID: {session_id}\n")
+                return 1
     else:
         env_sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
         if not env_sid:
@@ -3916,7 +4459,7 @@ def main():
     p_init.add_argument(
         "--harness",
         "-H",
-        choices=["antigravity", "claude", "manual", "auto"],
+        choices=["antigravity", "claude", "opencode", "manual", "auto"],
         default=None,
         help="Explicitly configure default assistant harness",
     )
@@ -3937,7 +4480,7 @@ def main():
     p_record.add_argument(
         "--harness",
         "-H",
-        help="Target assistant harness (antigravity, claude, manual) or custom attribution string",
+        help="Target assistant harness (antigravity, claude, opencode, manual) or custom attribution string",
     )
     p_record.add_argument("--message", "-m", help="Manually record prompt text without transcript")
     p_record.add_argument("--stdin", action="store_true", help="Read manual prompt text from standard input")
@@ -3986,13 +4529,13 @@ def main():
     # harness
     p_harness = subparsers.add_parser(
         "harness",
-        help="Get, set, or list assistant harnesses (antigravity, claude, manual)",
+        help="Get, set, or list assistant harnesses (antigravity, claude, opencode, manual)",
         parents=[base_parser],
     )
     p_harness.add_argument(
         "name",
         nargs="?",
-        choices=["antigravity", "claude", "manual", "auto", "none", "clear"],
+        choices=["antigravity", "claude", "opencode", "manual", "auto", "none", "clear"],
         help="Harness name to set (or 'clear' to restore auto-detection)",
     )
     p_harness.add_argument(

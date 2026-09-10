@@ -31,9 +31,9 @@ _SCRUBBED_ENV: dict = {}
 
 
 def _is_agent_env_key(key: str) -> bool:
-    if key in ("CLAUDECODE", "PROMPT_LOG_HARNESS", "GIT_PROMPT_LOG_HARNESS"):
+    if key in ("CLAUDECODE", "OPENCODE", "PROMPT_LOG_HARNESS", "GIT_PROMPT_LOG_HARNESS"):
         return True
-    return any(tok in key for tok in ("CLAUDE", "AGY", "ANTIGRAVITY", "AIDER", "GEMINI"))
+    return any(tok in key for tok in ("CLAUDE", "AGY", "ANTIGRAVITY", "AIDER", "GEMINI", "OPENCODE"))
 
 
 def setUpModule():
@@ -1457,10 +1457,12 @@ class TestIngestionAdapters(unittest.TestCase):
         names = [a.name for a in adapters]
         self.assertIn("antigravity", names)
         self.assertIn("claude", names)
+        self.assertIn("opencode", names)
         self.assertIn("manual", names)
 
         self.assertIsInstance(gpn.REGISTRY.get("antigravity"), gpn.AntigravityAdapter)
         self.assertIsInstance(gpn.REGISTRY.get("claude"), gpn.ClaudeCodeAdapter)
+        self.assertIsInstance(gpn.REGISTRY.get("opencode"), gpn.OpencodeAdapter)
         self.assertIsInstance(gpn.REGISTRY.get("manual"), gpn.ManualAdapter)
         self.assertIsInstance(gpn.REGISTRY.get("direct"), gpn.ManualAdapter)
 
@@ -1654,6 +1656,369 @@ class TestIngestionAdapters(unittest.TestCase):
         self.assertEqual(len(parsed["prompts"]), 1)
         self.assertEqual(parsed["prompts"][0].text, "Manual steer without transcript file")
 
+    def _create_mock_opencode_db(self, db_path: Path, sessions=None, messages=None, parts=None, projects=None, project_directories=None):
+        import sqlite3
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE session (
+                id text PRIMARY KEY,
+                project_id text NOT NULL,
+                parent_id text,
+                slug text NOT NULL,
+                directory text NOT NULL,
+                title text NOT NULL,
+                version text NOT NULL,
+                time_created integer NOT NULL,
+                time_updated integer NOT NULL,
+                agent text,
+                model text
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE project (
+                id text PRIMARY KEY,
+                worktree text NOT NULL,
+                name text
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE project_directory (
+                project_id text NOT NULL,
+                directory text NOT NULL,
+                type text,
+                strategy text,
+                PRIMARY KEY (project_id, directory)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE message (
+                id text PRIMARY KEY,
+                session_id text NOT NULL,
+                time_created integer NOT NULL,
+                time_updated integer NOT NULL,
+                data text NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE part (
+                id text PRIMARY KEY,
+                message_id text NOT NULL,
+                session_id text NOT NULL,
+                time_created integer NOT NULL,
+                time_updated integer NOT NULL,
+                data text NOT NULL
+            )
+        """)
+
+        for s in (sessions or []):
+            cur.execute("INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated, agent, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", s)
+        for p in (projects or []):
+            cur.execute("INSERT INTO project (id, worktree, name) VALUES (?, ?, ?)", p)
+        for pd in (project_directories or []):
+            cur.execute("INSERT INTO project_directory (project_id, directory, type, strategy) VALUES (?, ?, ?, ?)", pd)
+        for m in (messages or []):
+            cur.execute("INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)", m)
+        for pt in (parts or []):
+            cur.execute("INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)", pt)
+
+        conn.commit()
+        conn.close()
+
+    def test_opencode_environment_detection(self):
+        adapter = gpn.OpencodeAdapter()
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(adapter.is_active())
+            self.assertIsNone(adapter.detect_session_id())
+
+        with mock.patch.dict(os.environ, {"OPENCODE": "1"}):
+            self.assertTrue(adapter.is_active())
+
+        with mock.patch.dict(os.environ, {"OPENCODE_PID": "4242"}):
+            self.assertTrue(adapter.is_active())
+
+        with mock.patch.dict(os.environ, {"OPENCODE_SESSION_ID": "ses_custom_123"}):
+            self.assertTrue(adapter.is_active())
+            self.assertEqual(adapter.detect_session_id(), "ses_custom_123")
+
+        with mock.patch.dict(os.environ, {"OPENCODE_CONVERSATION_ID": "ses_custom_456"}):
+            self.assertTrue(adapter.is_active())
+            self.assertEqual(adapter.detect_session_id(), "ses_custom_456")
+
+    def test_opencode_agent_identity(self):
+        adapter = gpn.OpencodeAdapter()
+        harness, model = adapter.get_agent_identity("google/gemini-3.8-flash (High)")
+        self.assertIn("Opencode", harness)
+        self.assertEqual(model, "google/gemini-3.8-flash (High)")
+
+        harness, model = adapter.get_agent_identity(None)
+        self.assertIn("Opencode", harness)
+        self.assertEqual(model, "Opencode")
+
+        parsed_model = adapter._parse_model_identifier({"id": "claude-3-7-sonnet", "variant": "thinking"})
+        self.assertEqual(parsed_model, "claude-3-7-sonnet (Thinking)")
+
+    def test_opencode_db_extraction_and_prompts(self):
+        repo_dir = self.work_dir / "repo_db"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        db_path = self.work_dir / "opencode.db"
+        sessions = [
+            ("ses_test_1", "proj_1", None, "slug-1", str(repo_dir), "Test Session", "1.18.30", 1789074000000, 1789074200000, "build", json.dumps({"id": "claude-3-7-sonnet", "variant": "high"}))
+        ]
+        projects = [("proj_1", str(repo_dir), "test-project")]
+        messages = [
+            ("msg_1", "ses_test_1", 1789074000000, 1789074000000, json.dumps({"role": "user"})),
+            ("msg_2", "ses_test_1", 1789074060000, 1789074060000, json.dumps({"role": "assistant"})),
+            ("msg_3", "ses_test_1", 1789074120000, 1789074120000, json.dumps({"role": "user"})),
+        ]
+        parts = [
+            ("prt_1", "msg_1", "ses_test_1", 1789074000000, 1789074000000, json.dumps({"type": "text", "text": "First user steering prompt"})),
+            ("prt_2", "msg_2", "ses_test_1", 1789074060000, 1789074060000, json.dumps({
+                "type": "tool", "tool": "question", "state": {"status": "completed", "output": [["Yes, proceed with migration"]], "time": {"end": 1789074070000}}
+            })),
+            ("prt_3", "msg_3", "ses_test_1", 1789074120000, 1789074120000, json.dumps({"type": "text", "text": "Commit all changes and finalize"})),
+        ]
+        self._create_mock_opencode_db(db_path, sessions=sessions, messages=messages, parts=parts, projects=projects)
+
+        adapter = gpn.OpencodeAdapter()
+        with mock.patch.dict(os.environ, {"OPENCODE_DB_PATH": str(db_path)}):
+            data = adapter.find_session_data(session_id="ses_test_1", repo_root=repo_dir)
+            self.assertIsNotNone(data)
+            self.assertEqual(data["session_id"], "ses_test_1")
+            self.assertEqual(data["harness"], "Opencode 1.18.30")
+            self.assertEqual(data["detected_model"], "claude-3-7-sonnet (High)")
+            prompts = [p.text for p in data["prompts"]]
+            self.assertEqual(prompts, [
+                "First user steering prompt",
+                "[tool:question] Yes, proceed with migration",
+                "Commit all changes and finalize",
+            ])
+
+    def test_opencode_clean_user_prompt_strips_system_reminder(self):
+        repo_dir = self.work_dir / "repo_sys"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        db_path = self.work_dir / "opencode_sys.db"
+        sessions = [
+            ("ses_sys", "proj_1", None, "slug-sys", str(repo_dir), "Sys Session", "1.18.30", 1789074000000, 1789074100000, "plan", json.dumps({"id": "gemini-3.8"}))
+        ]
+        projects = [("proj_1", str(repo_dir), "test-project")]
+        raw_text = "Implement adapter feature\n<system-reminder>\nStrict read-only instructions\n</system-reminder>"
+        messages = [("msg_1", "ses_sys", 1789074000000, 1789074000000, json.dumps({"role": "user"}))]
+        parts = [("prt_1", "msg_1", "ses_sys", 1789074000000, 1789074000000, json.dumps({"type": "text", "text": raw_text}))]
+        self._create_mock_opencode_db(db_path, sessions=sessions, messages=messages, parts=parts, projects=projects)
+
+        adapter = gpn.OpencodeAdapter()
+        with mock.patch.dict(os.environ, {"OPENCODE_DB_PATH": str(db_path)}):
+            data = adapter.find_session_data(session_id="ses_sys", repo_root=repo_dir)
+            self.assertIsNotNone(data)
+            self.assertEqual(data["prompts"][0].text, "Implement adapter feature")
+
+    def test_opencode_worktree_matching_and_scoring(self):
+        repo_dir = self.work_dir / "repo_wt_main"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+        (repo_dir / "base.txt").write_text("base")
+        subprocess.run(["git", "add", "base.txt"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "chore: base"], cwd=repo_dir, check=True)
+
+        db_path = self.work_dir / "opencode_wt.db"
+        wt_dir = self.work_dir / "worktree_feature"
+        subprocess.run(["git", "worktree", "add", str(wt_dir), "-b", "wt-branch"], cwd=repo_dir, check=True, capture_output=True)
+
+        sessions = [
+            ("ses_root", "proj_1", None, "s-root", str(repo_dir), "Root Session", "1.18.30", 1789074000000, 1789074100000, "build", "m1"),
+            ("ses_wt", "proj_1", None, "s-wt", str(wt_dir), "Worktree Session", "1.18.30", 1789074200000, 1789074300000, "build", "m2"),
+            ("ses_other", "proj_2", None, "s-other", "/unrelated/path", "Other Session", "1.18.30", 1789074400000, 1789074500000, "build", "m3"),
+        ]
+        projects = [("proj_1", str(repo_dir), "my-repo"), ("proj_2", "/unrelated/path", "other-repo")]
+        project_directories = [("proj_1", str(wt_dir), None, "git_worktree")]
+        messages = [
+            ("msg_r", "ses_root", 1789074000000, 1789074000000, json.dumps({"role": "user"})),
+            ("msg_w", "ses_wt", 1789074200000, 1789074200000, json.dumps({"role": "user"})),
+            ("msg_o", "ses_other", 1789074400000, 1789074400000, json.dumps({"role": "user"})),
+        ]
+        parts = [
+            ("prt_r", "msg_r", "ses_root", 1789074000000, 1789074000000, json.dumps({"type": "text", "text": "Root prompt"})),
+            ("prt_w", "msg_w", "ses_wt", 1789074200000, 1789074200000, json.dumps({"type": "text", "text": "Worktree prompt"})),
+            ("prt_o", "msg_o", "ses_other", 1789074400000, 1789074400000, json.dumps({"type": "text", "text": "Unrelated prompt"})),
+        ]
+        self._create_mock_opencode_db(db_path, sessions=sessions, messages=messages, parts=parts, projects=projects, project_directories=project_directories)
+
+        adapter = gpn.OpencodeAdapter()
+        with mock.patch.dict(os.environ, {"OPENCODE_DB_PATH": str(db_path)}):
+            cands = adapter.list_candidate_sessions(repo_root=wt_dir)
+            sids = [c["session_id"] for c in cands]
+            self.assertIn("ses_root", sids)
+            self.assertIn("ses_wt", sids)
+            self.assertNotIn("ses_other", sids)
+
+            wt_cand = next(c for c in cands if c["session_id"] == "ses_wt")
+            self.assertEqual(wt_cand["score"], 2)
+            self.assertEqual(wt_cand["match_scope"], "exact worktree")
+
+    def test_opencode_transcript_file_parsing(self):
+        export_file = self.work_dir / "opencode_export.json"
+        export_data = {
+            "info": {
+                "id": "ses_export_999",
+                "version": "1.18.30",
+                "model": {"id": "google/gemini-3.8-flash", "variant": "high"}
+            },
+            "messages": [
+                {
+                    "info": {"role": "user", "time": {"created": 1789074000000}},
+                    "parts": [{"type": "text", "text": "Add exported adapter feature"}]
+                },
+                {
+                    "info": {"role": "assistant"},
+                    "parts": [{"type": "tool", "tool": "question", "state": {"status": "completed", "output": ["Approved"]}}]
+                }
+            ]
+        }
+        export_file.write_text(json.dumps(export_data), encoding="utf-8")
+
+        adapter = gpn.OpencodeAdapter()
+        parsed = adapter.parse_transcript_file(export_file)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["session_id"], "ses_export_999")
+        self.assertEqual(parsed["harness"], "Opencode 1.18.30")
+        self.assertEqual(parsed["detected_model"], "google/gemini-3.8-flash (High)")
+        prompts = [p.text for p in parsed["prompts"]]
+        self.assertEqual(prompts, ["Add exported adapter feature", "[tool:question] Approved"])
+
+    def test_opencode_post_commit_hook(self):
+        repo_dir = self.work_dir / "repo_opencode"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+
+        script_path = str(bin_path)
+        subprocess.run(["python3", script_path, "init"], cwd=repo_dir, check=True, capture_output=True)
+
+        db_path = self.work_dir / "opencode_hook.db"
+        sessions = [
+            ("ses_hook_1", "p1", None, "slug-h", str(repo_dir), "Hook Session", "1.18.30", 1789074000000, 1789074100000, "build", json.dumps({"id": "claude-3-7-sonnet"}))
+        ]
+        projects = [("p1", str(repo_dir), "repo_opencode")]
+        messages = [
+            ("msg_h1", "ses_hook_1", 1789074000000, 1789074000000, json.dumps({"role": "user"}))
+        ]
+        parts = [
+            ("prt_h1", "msg_h1", "ses_hook_1", 1789074000000, 1789074000000, json.dumps({"type": "text", "text": "Implement database-backed session tracker"}))
+        ]
+        self._create_mock_opencode_db(db_path, sessions=sessions, messages=messages, parts=parts, projects=projects)
+
+        # 1. Plain human commit without OPENCODE env
+        f1 = repo_dir / "human.txt"
+        f1.write_text("human")
+        subprocess.run(["git", "add", "human.txt"], cwd=repo_dir, check=True)
+        clean_env = os.environ.copy()
+        for k in list(clean_env.keys()):
+            if "AGY" in k or "ANTIGRAVITY" in k or "CLAUDE" in k or "AIDER" in k or "OPENCODE" in k:
+                del clean_env[k]
+        clean_env["PATH"] = f"{bin_path.parent}:{clean_env.get('PATH', '')}"
+
+        subprocess.run(["git", "commit", "-m", "Human commit"], cwd=repo_dir, env=clean_env, check=True)
+        self.assertIsNone(gpn.get_note_content("HEAD", repo_root=repo_dir))
+
+        # 2. Commit made inside Opencode agent session
+        opencode_env = clean_env.copy()
+        opencode_env["OPENCODE"] = "1"
+        opencode_env["OPENCODE_PID"] = "9999"
+        opencode_env["OPENCODE_DB_PATH"] = str(db_path)
+
+        f2 = repo_dir / "opencode.txt"
+        f2.write_text("opencode")
+        subprocess.run(["git", "add", "opencode.txt"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: Opencode commit"], cwd=repo_dir, env=opencode_env, check=True)
+
+        note = gpn.get_note_content("HEAD", repo_root=repo_dir)
+        self.assertIsNotNone(note)
+        self.assertIn("Assistant-Harness: Opencode 1.18.30", note)
+        self.assertIn("Assistant-Model: claude-3-7-sonnet", note)
+        self.assertIn("Implement database-backed session tracker", note)
+
+    def test_opencode_session_cli_drop_and_undrop(self):
+        repo_dir = self.work_dir / "repo_session_opencode"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+
+        script_path = str(bin_path)
+        subprocess.run(["python3", script_path, "init"], cwd=repo_dir, check=True, capture_output=True)
+
+        db_path = self.work_dir / "opencode_sess.db"
+        sessions = [
+            ("ses_drop_1", "p1", None, "slug-d", str(repo_dir), "Drop Session", "1.18.30", 1789074000000, 1789074200000, "build", "m1")
+        ]
+        projects = [("p1", str(repo_dir), "repo_opencode")]
+        messages = [
+            ("msg_d1", "ses_drop_1", 1789074000000, 1789074000000, json.dumps({"role": "user"})),
+            ("msg_d2", "ses_drop_1", 1789074100000, 1789074100000, json.dumps({"role": "user"})),
+        ]
+        parts = [
+            ("prt_d1", "msg_d1", "ses_drop_1", 1789074000000, 1789074000000, json.dumps({"type": "text", "text": "Prompt 1 to drop"})),
+            ("prt_d2", "msg_d2", "ses_drop_1", 1789074100000, 1789074100000, json.dumps({"type": "text", "text": "Prompt 2 to keep"})),
+        ]
+        self._create_mock_opencode_db(db_path, sessions=sessions, messages=messages, parts=parts, projects=projects)
+
+        env = os.environ.copy()
+        for k in list(env.keys()):
+            if "AGY" in k or "ANTIGRAVITY" in k or "CLAUDE" in k or "AIDER" in k or "OPENCODE" in k:
+                del env[k]
+        env["PATH"] = f"{bin_path.parent}:{env.get('PATH', '')}"
+        env["OPENCODE"] = "1"
+        env["OPENCODE_PID"] = "9999"
+        env["OPENCODE_DB_PATH"] = str(db_path)
+
+        (repo_dir / "file.txt").write_text("hello")
+        subprocess.run(["git", "add", "file.txt"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: initial"], cwd=repo_dir, env=env, check=True)
+
+        note = gpn.get_note_content("HEAD", repo_root=repo_dir)
+        self.assertIsNotNone(note)
+        self.assertIn("Prompt 1 to drop", note)
+        self.assertIn("Prompt 2 to keep", note)
+
+        # Drop prompt 1
+        res_drop = subprocess.run(["python3", script_path, "session", "drop", "1"], cwd=repo_dir, env=env, capture_output=True, text=True, check=True)
+        self.assertIn("Excluded prompt [1]", res_drop.stdout)
+
+        note_after_drop = gpn.get_note_content("HEAD", repo_root=repo_dir)
+        self.assertNotIn("Prompt 1 to drop", note_after_drop)
+        self.assertIn("Prompt 2 to keep", note_after_drop)
+
+        # Undrop prompt 1
+        res_undrop = subprocess.run(["python3", script_path, "session", "undrop", "1"], cwd=repo_dir, env=env, capture_output=True, text=True, check=True)
+        self.assertIn("Restored prompt '1'", res_undrop.stdout)
+
+        note_after_undrop = gpn.get_note_content("HEAD", repo_root=repo_dir)
+        self.assertIn("Prompt 1 to drop", note_after_undrop)
+        self.assertIn("Prompt 2 to keep", note_after_undrop)
+
+    def test_opencode_harness_cli(self):
+        repo_dir = self.work_dir / "repo_harness_opencode"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+        script_path = str(bin_path)
+
+        subprocess.run(["python3", script_path, "harness", "opencode"], cwd=repo_dir, check=True, capture_output=True)
+        res = subprocess.run(["python3", script_path, "harness"], cwd=repo_dir, capture_output=True, text=True, check=True)
+        self.assertIn("Configured Harness: opencode", res.stdout)
+
+        res_json = subprocess.run(["python3", script_path, "harness", "--json"], cwd=repo_dir, capture_output=True, text=True, check=True)
+        data = json.loads(res_json.stdout)
+        self.assertEqual(data["configured"], "opencode")
+        opencode_harness = next((h for h in data["harnesses"] if h["name"] == "opencode"), None)
+        self.assertIsNotNone(opencode_harness)
+        self.assertEqual(opencode_harness["display_name"], "Opencode")
+
+
     def test_antigravity_vscode_environment_detection(self):
         adapter = gpn.AntigravityAdapter()
         old_env = os.environ.copy()
@@ -1807,7 +2172,7 @@ class TestIngestionAdapters(unittest.TestCase):
         subprocess.run(["git", "add", "human.txt"], cwd=repo_dir, check=True)
         clean_env = os.environ.copy()
         for k in list(clean_env.keys()):
-            if "AGY" in k or "ANTIGRAVITY" in k or "CLAUDE" in k or "AIDER" in k:
+            if "AGY" in k or "ANTIGRAVITY" in k or "CLAUDE" in k or "AIDER" in k or "OPENCODE" in k:
                 del clean_env[k]
         clean_env["PATH"] = f"{bin_path.parent}:{clean_env.get('PATH', '')}"
 
@@ -1867,7 +2232,7 @@ class TestIngestionAdapters(unittest.TestCase):
 
         env = os.environ.copy()
         for k in list(env.keys()):
-            if "AGY" in k or "ANTIGRAVITY" in k or "CLAUDE" in k or "AIDER" in k:
+            if "AGY" in k or "ANTIGRAVITY" in k or "CLAUDE" in k or "AIDER" in k or "OPENCODE" in k:
                 del env[k]
         env["PATH"] = f"{bin_path.parent}:{env.get('PATH', '')}"
         env["CLAUDECODE"] = "1"
@@ -2935,7 +3300,7 @@ class TestClaudeSessionCommand(unittest.TestCase):
         env = os.environ.copy()
         env["PATH"] = f"{bin_path.parent}:{env.get('PATH', '')}"
         for k in list(env.keys()):
-            if "ANTIGRAVITY" in k or "AGY" in k or "GEMINI" in k:
+            if "ANTIGRAVITY" in k or "AGY" in k or "GEMINI" in k or "OPENCODE" in k:
                 env.pop(k, None)
         empty_brain = Path(self.tmp.name) / "empty_brain"
         empty_brain.mkdir(exist_ok=True)
@@ -2961,7 +3326,7 @@ class TestClaudeSessionCommand(unittest.TestCase):
         env = os.environ.copy()
         env["PATH"] = f"{bin_path.parent}:{env.get('PATH', '')}"
         for k in list(env.keys()):
-            if "ANTIGRAVITY" in k or "AGY" in k or "GEMINI" in k:
+            if "ANTIGRAVITY" in k or "AGY" in k or "GEMINI" in k or "OPENCODE" in k:
                 env.pop(k, None)
         empty_brain = Path(self.tmp.name) / "empty_brain"
         empty_brain.mkdir(exist_ok=True)
