@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -1303,7 +1304,7 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
 
         # Log command displays cleanly
         out_log = subprocess.check_output(
-            ["python3", str(Path(gpn.__file__).resolve()), "log", "--no-pager"],
+            ["python3", str(Path(gpn.__file__).resolve()), "log"],
             cwd=self.repo_dir,
             text=True,
             env=self.env,
@@ -1313,7 +1314,7 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
 
         # Verify color formatting in log
         out_color = subprocess.check_output(
-            ["python3", str(Path(gpn.__file__).resolve()), "log", "--color=always", "--no-pager"],
+            ["python3", str(Path(gpn.__file__).resolve()), "log", "--color=always"],
             cwd=self.repo_dir,
             text=True,
             env=self.env,
@@ -1323,7 +1324,7 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         self.assertIn("\033[0m", out_color)
 
         out_no_color = subprocess.check_output(
-            ["python3", str(Path(gpn.__file__).resolve()), "log", "--color=never", "--no-pager"],
+            ["python3", str(Path(gpn.__file__).resolve()), "log", "--color=never"],
             cwd=self.repo_dir,
             text=True,
             env=self.env,
@@ -1962,7 +1963,7 @@ class TestIngestionAdapters(unittest.TestCase):
 
         # 1. Run plain git-prompt-log
         res_plain = subprocess.run(
-            ["python3", script_path, "--no-pager"],
+            ["python3", script_path],
             cwd=repo_dir,
             capture_output=True,
             text=True,
@@ -1971,7 +1972,7 @@ class TestIngestionAdapters(unittest.TestCase):
 
         # 2. Run explicit git-prompt-log log
         res_log = subprocess.run(
-            ["python3", script_path, "log", "--no-pager"],
+            ["python3", script_path, "log"],
             cwd=repo_dir,
             capture_output=True,
             text=True,
@@ -1985,7 +1986,7 @@ class TestIngestionAdapters(unittest.TestCase):
         self.assertIn("feat: initial commit", res_plain.stdout)
         self.assertIn("Initial prompt steering", res_plain.stdout)
 
-        # 3. Verify --help still shows top-level help with default indication
+        # 3. Verify --help shows namespaced shorthand options without unnamespaced --ref or --color
         res_help = subprocess.run(
             ["python3", script_path, "--help"],
             cwd=repo_dir,
@@ -1994,8 +1995,43 @@ class TestIngestionAdapters(unittest.TestCase):
             check=True,
         )
         self.assertIn("Display commits with their steering prompts (default)", res_help.stdout)
+        self.assertIn("--prompt-full", res_help.stdout)
+        self.assertIn("--prompt-ref", res_help.stdout)
+        self.assertNotIn("--ref REF", res_help.stdout)
+        self.assertNotIn("--color {always,never,auto}", res_help.stdout)
 
-        # 4. Verify invalid command still produces error
+        # 4. Verify shorthand supports namespaced flags and forwarded options
+        res_shorthand_full = subprocess.run(
+            ["python3", script_path, "--prompt-full"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(res_shorthand_full.returncode, 0)
+        self.assertIn("Initial prompt steering", res_shorthand_full.stdout)
+
+        res_shorthand_count = subprocess.run(
+            ["python3", script_path, "-n", "1"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(res_shorthand_count.returncode, 0)
+        self.assertIn("feat: initial commit", res_shorthand_count.stdout)
+
+        res_shorthand_stat = subprocess.run(
+            ["python3", script_path, "--stat"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(res_shorthand_stat.returncode, 0)
+        self.assertIn("hello.txt", res_shorthand_stat.stdout)
+
+        # 5. Verify invalid command still produces error
         res_invalid = subprocess.run(
             ["python3", script_path, "unknown-cmd"],
             cwd=repo_dir,
@@ -2032,7 +2068,7 @@ class TestIngestionAdapters(unittest.TestCase):
         )
 
         res_log = subprocess.run(
-            ["python3", script_path, "log", "--no-pager"],
+            ["python3", script_path, "log"],
             cwd=repo_dir,
             capture_output=True,
             text=True,
@@ -3133,7 +3169,7 @@ class TestGitPromptLogStreaming(unittest.TestCase):
 
     def test_log_max_count(self):
         res = subprocess.run(
-            ["python3", self.script_path, "log", "-n", "2", "--no-pager"],
+            ["python3", self.script_path, "log", "-n", "2"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -3147,7 +3183,7 @@ class TestGitPromptLogStreaming(unittest.TestCase):
 
     def test_log_range(self):
         res = subprocess.run(
-            ["python3", self.script_path, "log", "HEAD~2..HEAD", "--no-pager"],
+            ["python3", self.script_path, "log", "HEAD~2..HEAD"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -3168,7 +3204,7 @@ class TestGitPromptLogStreaming(unittest.TestCase):
 
         # Standard log only shows active prompt
         res_standard = subprocess.run(
-            ["python3", self.script_path, "log", "-n", "1", "--no-pager"],
+            ["python3", self.script_path, "log", "-n", "1"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -3179,7 +3215,7 @@ class TestGitPromptLogStreaming(unittest.TestCase):
 
         # Full log shows all prompts with namespaced --prompt-full
         res_full = subprocess.run(
-            ["python3", self.script_path, "log", "-n", "1", "--prompt-full", "--no-pager"],
+            ["python3", self.script_path, "log", "-n", "1", "--prompt-full"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -3190,7 +3226,7 @@ class TestGitPromptLogStreaming(unittest.TestCase):
 
         # Alias --prompts-full also works
         res_full_alias = subprocess.run(
-            ["python3", self.script_path, "log", "-n", "1", "--prompts-full", "--no-pager"],
+            ["python3", self.script_path, "log", "-n", "1", "--prompts-full"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -3202,7 +3238,7 @@ class TestGitPromptLogStreaming(unittest.TestCase):
     def test_log_forwarded_flags_full_history(self):
         # Verify git log's native --full-history is not intercepted or collided with
         res = subprocess.run(
-            ["python3", self.script_path, "log", "-n", "1", "--full-history", "--no-pager"],
+            ["python3", self.script_path, "log", "-n", "1", "--full-history"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -3222,7 +3258,7 @@ class TestGitPromptLogStreaming(unittest.TestCase):
             capture_output=True,
         )
         res = subprocess.run(
-            ["python3", self.script_path, "log", "-n", "1", f"--prompt-ref={custom_ref}", "--no-pager"],
+            ["python3", self.script_path, "log", "-n", "1", f"--prompt-ref={custom_ref}"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -3256,7 +3292,7 @@ class TestGitPromptLogStreaming(unittest.TestCase):
 
     def test_log_forwarded_flags_stat(self):
         res = subprocess.run(
-            ["python3", self.script_path, "log", "-n", "1", "--stat", "--no-pager"],
+            ["python3", self.script_path, "log", "-n", "1", "--stat"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -3268,7 +3304,7 @@ class TestGitPromptLogStreaming(unittest.TestCase):
 
     def test_log_forwarded_flags_graph(self):
         res = subprocess.run(
-            ["python3", self.script_path, "log", "-n", "2", "--graph", "--no-pager"],
+            ["python3", self.script_path, "log", "-n", "2", "--graph"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -3281,7 +3317,7 @@ class TestGitPromptLogStreaming(unittest.TestCase):
 
     def test_log_forwarded_flags_patch(self):
         res = subprocess.run(
-            ["python3", self.script_path, "log", "-n", "1", "-p", "--no-pager"],
+            ["python3", self.script_path, "log", "-n", "1", "-p"],
             cwd=self.repo_dir,
             capture_output=True,
             text=True,
@@ -3308,7 +3344,6 @@ class TestGitPromptLogStreaming(unittest.TestCase):
                 max_count=None,
                 full=False,
                 color="never",
-                no_pager=True,
             )
             # Invoke cmd_log directly
             cwd_before = os.getcwd()
@@ -3322,6 +3357,34 @@ class TestGitPromptLogStreaming(unittest.TestCase):
             self.assertEqual(len(calls), 0, f"Expected 0 get_note_content calls, got {len(calls)}")
         finally:
             gpn.get_note_content = orig_get_note
+
+    def test_log_streaming_pager_respects_git_pager_cat(self):
+        # When GIT_PAGER=cat, StreamingPager writes directly to stdout without spawning a pager subprocess
+        with mock.patch.dict(os.environ, {"GIT_PAGER": "cat"}):
+            with mock.patch("sys.stdout.isatty", return_value=True):
+                with gpn.StreamingPager(repo_root=Path(self.repo_dir)) as pager:
+                    self.assertIsNone(pager.proc)
+                    self.assertIs(pager.stream, sys.stdout)
+
+    def test_log_streaming_pager_respects_git_pager_empty(self):
+        # When GIT_PAGER="", StreamingPager also writes directly to stdout
+        with mock.patch.dict(os.environ, {"GIT_PAGER": ""}):
+            with mock.patch("sys.stdout.isatty", return_value=True):
+                with gpn.StreamingPager(repo_root=Path(self.repo_dir)) as pager:
+                    self.assertIsNone(pager.proc)
+                    self.assertIs(pager.stream, sys.stdout)
+
+    def test_log_no_pager_flag_rejected(self):
+        # Since --no-pager is removed from git-prompt-log and not recognized by native git log,
+        # passing --no-pager forwarded to git log exits with an error.
+        res = subprocess.run(
+            ["python3", self.script_path, "log", "--no-pager"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("unrecognized argument: --no-pager", res.stderr)
 
 
 if __name__ == "__main__":

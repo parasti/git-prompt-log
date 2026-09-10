@@ -2741,6 +2741,7 @@ def stream_git_log_lines(
     repo_root: Optional[Path] = None,
     full: bool = False,
     use_color: bool = False,
+    status_holder: Optional[Dict[str, int]] = None,
 ) -> Iterator[str]:
     """
     Executes git log and yields filtered output lines, replacing Notes:
@@ -2751,7 +2752,7 @@ def stream_git_log_lines(
         ["git"] + git_cmd,
         cwd=cwd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stderr=None,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -2848,11 +2849,13 @@ def stream_git_log_lines(
         try:
             if proc.stdout:
                 proc.stdout.close()
-            if proc.stderr:
-                proc.stderr.close()
-            if proc.poll() is None:
+            try:
+                ret = proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
                 proc.terminate()
-            proc.wait()
+                ret = proc.wait()
+            if status_holder is not None:
+                status_holder["returncode"] = ret
         except Exception:
             pass
 
@@ -2882,7 +2885,6 @@ def cmd_log(args: argparse.Namespace, git_args: Optional[List[str]] = None) -> i
     repo_root = get_repo_root()
     ref = getattr(args, "prompt_ref", None) or getattr(args, "ref", DEFAULT_NOTES_REF) or DEFAULT_NOTES_REF
     full = getattr(args, "prompt_full", False) or getattr(args, "full", False)
-    no_pager = getattr(args, "no_pager", False) or getattr(args, "global_no_pager", False)
 
     forwarded: List[str] = list(git_args) if git_args is not None else []
     if git_args is None:
@@ -2926,14 +2928,15 @@ def cmd_log(args: argparse.Namespace, git_args: Optional[List[str]] = None) -> i
 
     git_cmd.extend(forwarded)
 
+    status_holder: Dict[str, int] = {}
     try:
-        with StreamingPager(repo_root=repo_root, no_pager=no_pager) as pager:
-            for chunk in stream_git_log_lines(git_cmd, repo_root=repo_root, full=full, use_color=use_color):
+        with StreamingPager(repo_root=repo_root) as pager:
+            for chunk in stream_git_log_lines(git_cmd, repo_root=repo_root, full=full, use_color=use_color, status_holder=status_holder):
                 pager.write(chunk)
     except (BrokenPipeError, KeyboardInterrupt):
         return 0
 
-    return 0
+    return status_holder.get("returncode", 0)
 
 
 def get_export_command(args: argparse.Namespace) -> str:
@@ -3877,12 +3880,6 @@ def main():
         help=f"Git notes reference namespace (default: {DEFAULT_NOTES_REF})",
     )
     base_parser.add_argument(
-        "--no-pager",
-        dest="no_pager",
-        action="store_true",
-        help="Do not pipe output into a pager",
-    )
-    base_parser.add_argument(
         "--color",
         choices=["always", "never", "auto"],
         default="auto",
@@ -3890,8 +3887,21 @@ def main():
     )
 
     parser = argparse.ArgumentParser(
+        prog="git-prompt-log",
         description="Records and merges AI steering prompts and session provenance in Git notes.",
-        parents=[base_parser],
+    )
+    parser.add_argument(
+        "--prompt-full",
+        "--prompts-full",
+        dest="prompt_full",
+        action="store_true",
+        help="Display full cumulative prompts instead of active prompt",
+    )
+    parser.add_argument(
+        "--prompt-ref",
+        "--prompts-ref",
+        dest="prompt_ref",
+        help=f"Git notes reference namespace for prompts (default: {DEFAULT_NOTES_REF})",
     )
 
     subparsers = parser.add_subparsers(dest="command")
@@ -4037,13 +4047,6 @@ def main():
         dest="prompt_ref",
         help=f"Git notes reference namespace for prompts (default: {DEFAULT_NOTES_REF})",
     )
-    p_log.add_argument(
-        "--no-pager",
-        "--prompt-no-pager",
-        dest="no_pager",
-        action="store_true",
-        help="Do not pipe output into a pager",
-    )
     p_log.add_argument("git_args", nargs="*", help="Options and revision ranges forwarded to git log")
 
     # edit
@@ -4135,19 +4138,37 @@ def main():
         help="Interleave session prompts and branch commits into a unified timeline (optional range e.g. main..HEAD)",
     )
 
+    KNOWN_COMMANDS = {
+        "init", "install", "deinit", "uninstall", "record", "delete", "rm",
+        "remove", "harness", "session", "edit", "post-commit", "post-rewrite",
+        "show", "log", "export", "export-log", "import", "import-log", "timeline"
+    }
+
     argv = sys.argv[1:]
+    is_log_cmd = False
+    log_args = []
     if "log" in argv:
+        is_log_cmd = True
         idx = argv.index("log")
         pre_args = argv[:idx]
         post_args = argv[idx + 1:]
         if "-h" in post_args or "--help" in post_args:
             p_log.print_help()
             sys.exit(0)
+        log_args = pre_args + post_args
+    elif not any(arg in KNOWN_COMMANDS for arg in argv):
+        # Shorthand invocation: git prompt-log [options...]
+        if "-h" not in argv and "--help" not in argv:
+            # If there's an unrecognized positional command, let parser.parse_args() produce standard error
+            if not argv or argv[0].startswith("-"):
+                is_log_cmd = True
+                log_args = argv
+
+    if is_log_cmd:
         log_opt_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
         log_opt_parser.add_argument("--prompt-ref", "--prompts-ref", dest="prompt_ref", default=None)
-        log_opt_parser.add_argument("--no-pager", "--prompt-no-pager", dest="no_pager", action="store_true")
         log_opt_parser.add_argument("--prompt-full", "--prompts-full", dest="prompt_full", action="store_true")
-        known_args, git_forwarded = log_opt_parser.parse_known_args(pre_args + post_args)
+        known_args, git_forwarded = log_opt_parser.parse_known_args(log_args)
         known_args.command = "log"
         sys.exit(cmd_log(known_args, git_args=git_forwarded))
 
