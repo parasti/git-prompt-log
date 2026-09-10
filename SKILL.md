@@ -37,7 +37,7 @@ git prompt-log init
 ```
 *Options to mention or use if requested:*
 * `--no-post-commit`: Skips installing the automatic post-commit hook.
-* `-H, --harness <name>`: Explicitly configure default assistant harness (`antigravity`, `claude`, `manual`).
+* `-H, --harness <name>`: Explicitly configure default assistant harness (`antigravity`, `claude`, `opencode`, `manual`).
 
 ### Inspect Notes & Commit Log History
 When asked to view or check prompt notes or commit history:
@@ -173,7 +173,7 @@ git prompt-log record -m "System architecture design" --harness "Human Dev" --mo
 Dropping prompts via `record --drop` or `--drop-last` only affects that specific commit's note. Because the session transcript remains untouched, omitted prompts will return on subsequent commits from the same session unless excluded with `git prompt-log session drop`.
 
 ### Supported Harnesses
-`git-prompt-log` supports multiple assistant harnesses (`antigravity`, `claude`, `manual`):
+`git-prompt-log` supports multiple assistant harnesses (`antigravity`, `claude`, `opencode`, `manual`):
 ```bash
 # Explicitly set the active harness for this repository (or --global)
 git prompt-log harness antigravity

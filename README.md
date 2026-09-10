@@ -43,7 +43,7 @@ git prompt-log --prompt-full
 
 Now that the hooks are installed, see automated prompt tracking in action:
 
-1. Ask your coding assistant (e.g. Google Antigravity, Claude Code) to make a change and commit it:
+1. Ask your coding assistant (e.g. Google Antigravity, Claude Code, Opencode) to make a change and commit it:
    > *"Add a small doc improvement to the README and commit it"*
 
 2. Look at the log again:
@@ -66,7 +66,7 @@ git prompt-log record main..HEAD
 
 In practice, **you will almost never run `record` yourself**. Once enabled in a repository, `git-prompt-log` works completely automatically in the background:
 
-1. **Prompt and commit naturally:** When your coding assistant (e.g. Google Antigravity, Claude Code) authors a commit, the `.git/hooks/post-commit` hook automatically detects the active session, extracts the steering prompt that guided the work, and attaches it as a git note. Regular human commits are unaffected.
+1. **Prompt and commit naturally:** When your coding assistant (e.g. Google Antigravity, Claude Code, Opencode) authors a commit, the `.git/hooks/post-commit` hook automatically detects the active session, extracts the steering prompt that guided the work, and attaches it as a git note. Regular human commits are unaffected.
 2. **Rebasing and squashing just work:** When you rebase, squash, or amend commits, Git invokes the `.git/hooks/post-rewrite` hook, which automatically preserves and merges prompt chains in reverse-chronological order.
 3. **Inspect anytime:**
    ```bash
@@ -262,6 +262,7 @@ Note that modifying a single commit's note this way does not alter the underlyin
 | :--- | :--- | :--- |
 | Google Antigravity | `antigravity` | `$AGY_SESSION_ID`, `$ANTIGRAVITY_CONVERSATION_ID`, `$ANTIGRAVITY_VSCODE_HOST`, CLI & VS Code `brain/` |
 | Claude Code | `claude` | `$CLAUDE_SESSION_ID`, `~/.claude/projects/`, `$CLAUDE_TRANSCRIPT_PATH` |
+| Opencode | `opencode` | `$OPENCODE`, `$OPENCODE_PID`, `$OPENCODE_SESSION_ID`, `~/.local/share/opencode/opencode.db` |
 | Manual Entry | `manual` | `-m / --message "..."` or `--stdin` |
 
 ### Configuring Your Assistant Harness
