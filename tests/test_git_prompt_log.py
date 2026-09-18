@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import sqlite3
 from unittest import mock
 from pathlib import Path
 
@@ -2100,6 +2101,270 @@ class TestIngestionAdapters(unittest.TestCase):
         finally:
             gpn.get_brain_dirs = orig_get_dirs
 
+    def test_antigravity_subagent_resolves_to_root_session_trigger_prompt(self):
+        brain = self.work_dir / "antigravity-cli" / "brain"
+        brain.mkdir(parents=True, exist_ok=True)
+
+        root_id = "root-sess-1"
+        child_id = "child-sess-1"
+
+        # Root session directory and transcript
+        root_logs = brain / root_id / ".system_generated" / "logs"
+        root_logs.mkdir(parents=True, exist_ok=True)
+        root_t = root_logs / "transcript.jsonl"
+        root_steps = [
+            {"step_index": 1, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-11T08:00:00Z", "content": "<USER_REQUEST>Initial human prompt</USER_REQUEST>"},
+            {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "created_at": "2026-09-11T08:05:00Z", "content": "I will prepare the workspace."},
+            {"step_index": 3, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-11T08:10:00Z", "content": "<USER_REQUEST>Execute Task 1 with subagents</USER_REQUEST>"},
+            {"step_index": 4, "source": "MODEL", "type": "PLANNER_RESPONSE", "created_at": "2026-09-11T08:11:00Z", "tool_calls": [{"name": "invoke_subagent", "args": {"Prompt": "You are implementing Task 1"}}]},
+            {"step_index": 5, "source": "MODEL", "type": "GENERIC", "created_at": "2026-09-11T08:11:05Z", "content": f'Created the following subagents:\n{{\n  "conversationId": "{child_id}"\n}}'},
+        ]
+        root_t.write_text("\n".join(json.dumps(s) for s in root_steps) + "\n", encoding="utf-8")
+
+        # Root subagent registration
+        subagents_dir = brain / root_id / ".system_generated" / "subagents"
+        subagents_dir.mkdir(parents=True, exist_ok=True)
+        (subagents_dir / f"{child_id}.json").write_text(json.dumps({
+            "conversationId": child_id,
+            "spawnStepIndex": 5,
+            "state": "SUBAGENT_STATE_ALIVE",
+            "subagentDescriptor": {"role": "Task 1 Implementer", "typeName": "self"},
+        }), encoding="utf-8")
+
+        # Child session directory and synthetic prompt transcript
+        child_logs = brain / child_id / ".system_generated" / "logs"
+        child_logs.mkdir(parents=True, exist_ok=True)
+        child_t = child_logs / "transcript.jsonl"
+        child_steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-11T08:11:05Z", "content": "<USER_REQUEST>You are implementing Task 1</USER_REQUEST>"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "created_at": "2026-09-11T08:12:00Z", "content": "Implementing..."},
+        ]
+        child_t.write_text("\n".join(json.dumps(s) for s in child_steps) + "\n", encoding="utf-8")
+
+        adapter = gpn.AntigravityAdapter()
+        orig_get_dirs = gpn.get_brain_dirs
+        gpn.get_brain_dirs = lambda: [brain]
+        try:
+            data = adapter.find_session_data(session_id=child_id)
+            self.assertIsNotNone(data)
+            self.assertEqual(data["session_id"], root_id)
+            self.assertEqual(len(data["prompts"]), 2)
+            # The trigger prompt must be the human prompt before invocation
+            self.assertEqual(data["prompts"][-1].text, "Execute Task 1 with subagents")
+            # Synthetic agent prompt must NOT be in prompts
+            all_text = " ".join(p.text for p in data["prompts"])
+            self.assertNotIn("You are implementing Task 1", all_text)
+        finally:
+            gpn.get_brain_dirs = orig_get_dirs
+
+    def test_antigravity_subagent_mid_execution_chat_isolation(self):
+        brain = self.work_dir / "antigravity-cli" / "brain"
+        brain.mkdir(parents=True, exist_ok=True)
+
+        root_id = "root-sess-mid"
+        child_id = "child-sess-mid"
+
+        root_logs = brain / root_id / ".system_generated" / "logs"
+        root_logs.mkdir(parents=True, exist_ok=True)
+        root_t = root_logs / "transcript.jsonl"
+        root_steps = [
+            {"step_index": 1, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-11T09:00:00Z", "content": "<USER_REQUEST>Subagent execution.</USER_REQUEST>"},
+            {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "created_at": "2026-09-11T09:01:00Z", "tool_calls": [{"name": "invoke_subagent"}]},
+            {"step_index": 3, "source": "MODEL", "type": "GENERIC", "created_at": "2026-09-11T09:01:05Z", "content": f'Created the following subagents:\n{{\n  "conversationId": "{child_id}"\n}}'},
+            # User chats with main agent while subagent runs in background:
+            {"step_index": 4, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-11T09:05:00Z", "content": "<USER_REQUEST>What is our test coverage right now?</USER_REQUEST>"},
+            {"step_index": 5, "source": "MODEL", "type": "PLANNER_RESPONSE", "created_at": "2026-09-11T09:05:30Z", "content": "Coverage is 88%."},
+            {"step_index": 6, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-11T09:08:00Z", "content": "<USER_REQUEST>Also remember to update documentation later.</USER_REQUEST>"},
+        ]
+        root_t.write_text("\n".join(json.dumps(s) for s in root_steps) + "\n", encoding="utf-8")
+
+        subagents_dir = brain / root_id / ".system_generated" / "subagents"
+        subagents_dir.mkdir(parents=True, exist_ok=True)
+        (subagents_dir / f"{child_id}.json").write_text(json.dumps({
+            "conversationId": child_id,
+            "spawnStepIndex": 3,
+            "state": "SUBAGENT_STATE_ALIVE",
+        }), encoding="utf-8")
+
+        adapter = gpn.AntigravityAdapter()
+        orig_get_dirs = gpn.get_brain_dirs
+        gpn.get_brain_dirs = lambda: [brain]
+        try:
+            data = adapter.find_session_data(session_id=child_id)
+            self.assertIsNotNone(data)
+            self.assertEqual(data["session_id"], root_id)
+            self.assertEqual(len(data["prompts"]), 1)
+            self.assertEqual(data["prompts"][0].text, "Subagent execution.")
+            # Verify mid-execution chat prompts are excluded
+            all_text = " ".join(p.text for p in data["prompts"])
+            self.assertNotIn("test coverage", all_text)
+            self.assertNotIn("update documentation", all_text)
+        finally:
+            gpn.get_brain_dirs = orig_get_dirs
+
+    def test_antigravity_chained_subagents_resolve_to_root(self):
+        brain = self.work_dir / "antigravity-cli" / "brain"
+        brain.mkdir(parents=True, exist_ok=True)
+
+        root_id = "root-sess-chain"
+        agent1_id = "agent-sess-1"
+        agent2_id = "agent-sess-2"
+
+        # Root session
+        root_logs = brain / root_id / ".system_generated" / "logs"
+        root_logs.mkdir(parents=True, exist_ok=True)
+        (root_logs / "transcript.jsonl").write_text("\n".join([
+            json.dumps({"step_index": 1, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-11T10:00:00Z", "content": "<USER_REQUEST>Start hierarchical pipeline</USER_REQUEST>"}),
+            json.dumps({"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "created_at": "2026-09-11T10:01:00Z", "tool_calls": [{"name": "invoke_subagent"}]}),
+            json.dumps({"step_index": 3, "source": "MODEL", "type": "GENERIC", "created_at": "2026-09-11T10:01:05Z", "content": f'Created the following subagents:\n{{\n  "conversationId": "{agent1_id}"\n}}'}),
+        ]) + "\n", encoding="utf-8")
+
+        (brain / root_id / ".system_generated" / "subagents").mkdir(parents=True, exist_ok=True)
+        (brain / root_id / ".system_generated" / "subagents" / f"{agent1_id}.json").write_text(json.dumps({
+            "conversationId": agent1_id,
+            "spawnStepIndex": 3,
+        }), encoding="utf-8")
+
+        # Agent 1 spawns Agent 2
+        agent1_logs = brain / agent1_id / ".system_generated" / "logs"
+        agent1_logs.mkdir(parents=True, exist_ok=True)
+        (agent1_logs / "transcript.jsonl").write_text("\n".join([
+            json.dumps({"step_index": 1, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-11T10:01:05Z", "content": "<USER_REQUEST>Subagent 1 prompt</USER_REQUEST>"}),
+            json.dumps({"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "created_at": "2026-09-11T10:02:00Z", "tool_calls": [{"name": "invoke_subagent"}]}),
+            json.dumps({"step_index": 3, "source": "MODEL", "type": "GENERIC", "created_at": "2026-09-11T10:02:05Z", "content": f'Created the following subagents:\n{{\n  "conversationId": "{agent2_id}"\n}}'}),
+        ]) + "\n", encoding="utf-8")
+
+        (brain / agent1_id / ".system_generated" / "subagents").mkdir(parents=True, exist_ok=True)
+        (brain / agent1_id / ".system_generated" / "subagents" / f"{agent2_id}.json").write_text(json.dumps({
+            "conversationId": agent2_id,
+            "spawnStepIndex": 3,
+        }), encoding="utf-8")
+
+        adapter = gpn.AntigravityAdapter()
+        orig_get_dirs = gpn.get_brain_dirs
+        gpn.get_brain_dirs = lambda: [brain]
+        try:
+            data = adapter.find_session_data(session_id=agent2_id)
+            self.assertIsNotNone(data)
+            self.assertEqual(data["session_id"], root_id)
+            self.assertEqual(data["prompts"][-1].text, "Start hierarchical pipeline")
+        finally:
+            gpn.get_brain_dirs = orig_get_dirs
+
+    def test_antigravity_subagents_excluded_from_candidate_list(self):
+        brain = self.work_dir / "antigravity-cli" / "brain"
+        brain.mkdir(parents=True, exist_ok=True)
+
+        root_id = "root-sess-list"
+        child_id = "child-sess-sub"
+
+        root_logs = brain / root_id / ".system_generated" / "logs"
+        root_logs.mkdir(parents=True, exist_ok=True)
+        (root_logs / "transcript.jsonl").write_text(json.dumps({
+            "step_index": 1, "source": "USER_EXPLICIT", "type": "USER_INPUT",
+            "created_at": "2026-09-11T11:00:00Z", "content": "<USER_REQUEST>Main conversation</USER_REQUEST>",
+        }) + "\n", encoding="utf-8")
+
+        (brain / root_id / ".system_generated" / "subagents").mkdir(parents=True, exist_ok=True)
+        (brain / root_id / ".system_generated" / "subagents" / f"{child_id}.json").write_text(json.dumps({
+            "conversationId": child_id, "spawnStepIndex": 2,
+        }), encoding="utf-8")
+
+        child_logs = brain / child_id / ".system_generated" / "logs"
+        child_logs.mkdir(parents=True, exist_ok=True)
+        (child_logs / "transcript.jsonl").write_text(json.dumps({
+            "step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
+            "created_at": "2026-09-11T11:01:00Z", "content": "<USER_REQUEST>Synthetic prompt</USER_REQUEST>",
+        }) + "\n", encoding="utf-8")
+
+        adapter = gpn.AntigravityAdapter()
+        orig_get_dirs = gpn.get_brain_dirs
+        gpn.get_brain_dirs = lambda: [brain]
+        try:
+            os.environ["ANTIGRAVITY_CONVERSATION_ID"] = child_id
+            candidates = adapter.list_candidate_sessions()
+            c_ids = [c["session_id"] for c in candidates]
+            self.assertNotIn(child_id, c_ids)
+            self.assertIn(root_id, c_ids)
+            root_cand = next(c for c in candidates if c["session_id"] == root_id)
+            self.assertTrue(root_cand["is_active"])
+        finally:
+            os.environ.pop("ANTIGRAVITY_CONVERSATION_ID", None)
+            gpn.get_brain_dirs = orig_get_dirs
+
+    def test_opencode_subagent_resolves_to_root_session(self):
+        db_path = self.work_dir / "opencode" / "opencode.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE session (
+                id text PRIMARY KEY,
+                project_id text,
+                parent_id text,
+                slug text,
+                directory text,
+                title text,
+                version text,
+                time_created integer,
+                time_updated integer,
+                agent text,
+                model text
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE message (
+                id text PRIMARY KEY,
+                session_id text,
+                time_created integer,
+                time_updated integer,
+                data text
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE part (
+                id text PRIMARY KEY,
+                message_id text,
+                time_created integer,
+                time_updated integer,
+                data text
+            )
+        """)
+
+        cur.execute("INSERT INTO session VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ("root-oc-1", "p1", None, "root", str(self.work_dir), "Root Task", "1.18.0", 1000, 5000, "build", "gemini-flash"))
+        cur.execute("INSERT INTO session VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ("child-oc-1", "p1", "root-oc-1", "child", str(self.work_dir), "Child Subagent", "1.18.0", 3000, 4000, "general", "gemini-flash"))
+
+        cur.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)", ("m1", "root-oc-1", 1500, 1500, json.dumps({"role": "user"})))
+        cur.execute("INSERT INTO part VALUES (?, ?, ?, ?, ?)", ("p1", "m1", 1500, 1500, json.dumps({"type": "text", "text": "Execute subagent plan"})))
+        cur.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)", ("m2", "root-oc-1", 2000, 2000, json.dumps({"role": "assistant"})))
+        cur.execute("INSERT INTO part VALUES (?, ?, ?, ?, ?)", ("p2", "m2", 2000, 2000, json.dumps({"type": "tool", "tool": "task"})))
+        cur.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)", ("m3", "root-oc-1", 3500, 3500, json.dumps({"role": "user"})))
+        cur.execute("INSERT INTO part VALUES (?, ?, ?, ?, ?)", ("p3", "m3", 3500, 3500, json.dumps({"type": "text", "text": "How is memory consumption?"})))
+
+        cur.execute("INSERT INTO message VALUES (?, ?, ?, ?, ?)", ("cm1", "child-oc-1", 3000, 3000, json.dumps({"role": "user"})))
+        cur.execute("INSERT INTO part VALUES (?, ?, ?, ?, ?)", ("cp1", "cm1", 3000, 3000, json.dumps({"type": "text", "text": "You are a subagent implementer"})))
+        conn.commit()
+        conn.close()
+
+        adapter = gpn.OpencodeAdapter()
+        orig_paths = adapter._get_db_paths
+        adapter._get_db_paths = lambda repo_root=None: [db_path]
+        try:
+            data = adapter.find_session_data(session_id="child-oc-1", repo_root=self.work_dir)
+            self.assertIsNotNone(data)
+            self.assertEqual(data["session_id"], "root-oc-1")
+            self.assertEqual(len(data["prompts"]), 1)
+            self.assertEqual(data["prompts"][0].text, "Execute subagent plan")
+
+            cands = adapter.list_candidate_sessions(repo_root=self.work_dir)
+            cand_sids = [c["session_id"] for c in cands]
+            self.assertNotIn("child-oc-1", cand_sids)
+            self.assertIn("root-oc-1", cand_sids)
+        finally:
+            adapter._get_db_paths = orig_paths
+
     def test_manual_record_cli_and_harness_subcommand(self):
         repo_dir = self.work_dir / "test_repo"
         repo_dir.mkdir()
@@ -2247,6 +2512,76 @@ class TestIngestionAdapters(unittest.TestCase):
         self.assertIsNotNone(note, "post-commit hook should have recorded a note in a real Claude Code env")
         self.assertIn("Assistant-Harness: Claude Code", note)
         self.assertIn("Make a test commit", note)
+
+    def test_antigravity_post_commit_subagent_records_human_prompt(self):
+        repo_dir = self.work_dir / "repo_antigravity_subagent"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+
+        script_path = str(bin_path)
+        subprocess.run(["python3", script_path, "init"], cwd=repo_dir, check=True, capture_output=True)
+
+        brain = self.work_dir / "antigravity_hook_data" / "brain"
+        brain.mkdir(parents=True, exist_ok=True)
+
+        root_id = "root-hook-session"
+        child_id = "child-hook-session"
+
+        # Root session directory and transcript
+        root_logs = brain / root_id / ".system_generated" / "logs"
+        root_logs.mkdir(parents=True, exist_ok=True)
+        root_t = root_logs / "transcript.jsonl"
+        root_steps = [
+            {"step_index": 1, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-11T08:00:00Z", "content": f"<USER_REQUEST>Implement subagent feature in {repo_dir}</USER_REQUEST>"},
+            {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE", "created_at": "2026-09-11T08:01:00Z", "tool_calls": [{"name": "invoke_subagent"}]},
+            {"step_index": 3, "source": "MODEL", "type": "GENERIC", "created_at": "2026-09-11T08:01:05Z", "content": f'Created the following subagents:\n{{\n  "conversationId": "{child_id}"\n}}'},
+        ]
+        root_t.write_text("\n".join(json.dumps(s) for s in root_steps) + "\n", encoding="utf-8")
+
+        # Root subagent registration
+        subagents_dir = brain / root_id / ".system_generated" / "subagents"
+        subagents_dir.mkdir(parents=True, exist_ok=True)
+        (subagents_dir / f"{child_id}.json").write_text(json.dumps({
+            "conversationId": child_id,
+            "spawnStepIndex": 3,
+            "state": "SUBAGENT_STATE_ALIVE",
+        }), encoding="utf-8")
+
+        # Child session directory and transcript with synthetic prompt
+        child_logs = brain / child_id / ".system_generated" / "logs"
+        child_logs.mkdir(parents=True, exist_ok=True)
+        child_t = child_logs / "transcript.jsonl"
+        child_steps = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-11T08:01:05Z", "content": "<USER_REQUEST>You are a subagent implementer</USER_REQUEST>"},
+            {"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE", "created_at": "2026-09-11T08:02:00Z", "content": "Done."},
+        ]
+        child_t.write_text("\n".join(json.dumps(s) for s in child_steps) + "\n", encoding="utf-8")
+
+        clean_env = os.environ.copy()
+        for k in list(clean_env.keys()):
+            if "AGY" in k or "ANTIGRAVITY" in k or "CLAUDE" in k or "AIDER" in k or "OPENCODE" in k:
+                del clean_env[k]
+        clean_env["PATH"] = f"{bin_path.parent}:{clean_env.get('PATH', '')}"
+
+        subagent_env = clean_env.copy()
+        subagent_env["ANTIGRAVITY_CONVERSATION_ID"] = child_id
+        subagent_env["ANTIGRAVITY_DATA_DIR"] = str(brain.parent)
+
+        f = repo_dir / "work.txt"
+        f.write_text("subagent work")
+        subprocess.run(["git", "add", "work.txt"], cwd=repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: Commit made by subagent"], cwd=repo_dir, env=subagent_env, check=True)
+
+        note = gpn.get_note_content("HEAD", repo_root=repo_dir)
+        self.assertIsNotNone(note)
+        # Note must be attributed to the root session, not the child session
+        self.assertIn(f"Assistant-Session: {root_id}", note)
+        # Prompt must be the human trigger prompt
+        self.assertIn("Implement subagent feature", note)
+        # Synthetic prompt must NOT be in note
+        self.assertNotIn("You are a subagent implementer", note)
 
     def test_harness_cli_and_git_config(self):
         repo_dir = self.work_dir / "repo_harness"

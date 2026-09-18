@@ -952,10 +952,74 @@ class AntigravityAdapter(BaseIngestionAdapter):
                             break
 
         if not t_path or not t_path.exists():
+            if isinstance(session_id_or_path, str):
+                root_sid, _ = self.resolve_subagent_to_root(session_id_or_path)
+                if root_sid and root_sid != session_id_or_path:
+                    return self._session_matches_repo(root_sid, repo_root)
             return False
 
         paths = self._extract_session_paths(t_path)
-        return self._session_match_score(paths, repo_root) > 0
+        score = self._session_match_score(paths, repo_root)
+        if score > 0:
+            return True
+        if isinstance(session_id_or_path, str):
+            root_sid, _ = self.resolve_subagent_to_root(session_id_or_path)
+            if root_sid and root_sid != session_id_or_path:
+                return self._session_matches_repo(root_sid, repo_root)
+        return False
+
+    def _get_all_subagent_ids(self) -> Set[str]:
+        """Collects all known subagent session IDs across candidate brain directories."""
+        subagents: Set[str] = set()
+        for brain in get_brain_dirs():
+            if not brain.exists():
+                continue
+            for f in brain.glob("*/.system_generated/subagents/*.json"):
+                subagents.add(f.stem)
+        return subagents
+
+    def _find_subagent_parent(self, session_id: str) -> Optional[Tuple[str, int]]:
+        """
+        If session_id was spawned as a subagent, returns (parent_session_id, spawn_step_index).
+        Otherwise returns None.
+        """
+        if not session_id:
+            return None
+        for brain in get_brain_dirs():
+            if not brain.exists():
+                continue
+            matches = list(brain.glob(f"*/.system_generated/subagents/{session_id}.json"))
+            if matches:
+                parent_dir = matches[0].parent.parent.parent
+                try:
+                    data = json.loads(matches[0].read_text(encoding="utf-8"))
+                    spawn_step = data.get("spawnStepIndex", 0)
+                    return parent_dir.name, spawn_step
+                except Exception:
+                    return parent_dir.name, 0
+        return None
+
+    def resolve_subagent_to_root(self, session_id: str) -> Tuple[str, Optional[int]]:
+        """
+        Recursively resolves session_id to its root session.
+        Returns (root_session_id, root_spawn_step_index), or (session_id, None) if not a subagent.
+        """
+        if not session_id:
+            return session_id, None
+        curr_id = session_id
+        root_spawn_step: Optional[int] = None
+        visited: Set[str] = set()
+        while curr_id and curr_id not in visited:
+            visited.add(curr_id)
+            info = self._find_subagent_parent(curr_id)
+            if not info:
+                break
+            parent_id, step = info
+            root_spawn_step = step
+            curr_id = parent_id
+        if curr_id == session_id:
+            return session_id, None
+        return curr_id, root_spawn_step
 
     def _find_latest_matching_session(
         self,
@@ -1025,6 +1089,11 @@ class AntigravityAdapter(BaseIngestionAdapter):
         seen_sids: Set[str] = set()
 
         active_env_sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+        active_root_sid: Optional[str] = None
+        if active_env_sid:
+            active_root_sid, _ = self.resolve_subagent_to_root(active_env_sid)
+
+        subagent_ids = self._get_all_subagent_ids()
 
         for brain in get_brain_dirs():
             if not brain.exists():
@@ -1033,7 +1102,7 @@ class AntigravityAdapter(BaseIngestionAdapter):
                 if not cid_dir.is_dir() or cid_dir.name.startswith("."):
                     continue
                 sid = cid_dir.name
-                if sid in seen_sids:
+                if sid in seen_sids or sid in subagent_ids:
                     continue
                 t_path = cid_dir / ".system_generated" / "logs" / "transcript.jsonl"
                 if not t_path.exists():
@@ -1043,7 +1112,7 @@ class AntigravityAdapter(BaseIngestionAdapter):
                     mtime = t_path.stat().st_mtime
                     paths = self._extract_session_paths(t_path)
                     score = self._session_match_score(paths, repo) if repo else 1
-                    if score <= 0 and sid != active_env_sid:
+                    if score <= 0 and sid != active_env_sid and sid != active_root_sid:
                         continue
 
                     parsed = self.parse_transcript(t_path, apply_session_excludes=False, repo_root=repo)
@@ -1065,7 +1134,7 @@ class AntigravityAdapter(BaseIngestionAdapter):
                     if len(first_line) > 80:
                         first_line = first_line[:77] + "..."
 
-                    is_active = (sid == active_env_sid)
+                    is_active = (sid == active_env_sid or (active_root_sid is not None and sid == active_root_sid))
                     match_scope = "exact worktree" if score >= 2 else "repo"
 
                     candidates.append({
@@ -1132,6 +1201,7 @@ class AntigravityAdapter(BaseIngestionAdapter):
         custom_patterns: Optional[List[str]] = None,
         apply_session_excludes: bool = True,
         repo_root: Optional[Path] = None,
+        until_step_index: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         if not transcript_path.exists():
             return None
@@ -1158,6 +1228,10 @@ class AntigravityAdapter(BaseIngestionAdapter):
         pending_tool_names: List[str] = []
 
         for step in steps:
+            step_idx = step.get("step_index")
+            if until_step_index is not None and step_idx is not None and step_idx >= until_step_index:
+                continue
+
             stype = step.get("type", "")
             source = step.get("source", "")
             content = step.get("content", "")
@@ -1189,6 +1263,15 @@ class AntigravityAdapter(BaseIngestionAdapter):
             else:
                 pending_tool_names = []
 
+        if until_step_index is not None and not raw_turns:
+            return self.parse_transcript(
+                transcript_path,
+                custom_patterns=custom_patterns,
+                apply_session_excludes=apply_session_excludes,
+                repo_root=repo_root,
+                until_step_index=None,
+            )
+
         prompts = process_prompt_turns(raw_turns)
         cid = transcript_path.parent.parent.parent.name
         if apply_session_excludes:
@@ -1217,31 +1300,30 @@ class AntigravityAdapter(BaseIngestionAdapter):
         extra_options: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         repo = repo_root or get_repo_root()
-        target_t_path: Optional[Path] = None
+        target_sid = session_id
 
-        if session_id:
-            for brain in get_brain_dirs():
-                t_path = brain / session_id / ".system_generated" / "logs" / "transcript.jsonl"
-                if t_path.exists():
-                    target_t_path = t_path
-                    break
-            if not target_t_path:
-                return None
-        else:
+        if not target_sid:
             # 1. Check environment session if available AND matches repository
             sid = os.environ.get("AGY_SESSION_ID") or os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
             if sid and (not repo or self._session_matches_repo(sid, repo)):
-                for brain in get_brain_dirs():
-                    t_path = brain / sid / ".system_generated" / "logs" / "transcript.jsonl"
-                    if t_path.exists():
-                        target_t_path = t_path
-                        break
-
-            # 2. Find latest active session matching repository across candidate brains
-            if not target_t_path:
+                target_sid = sid
+            else:
+                # 2. Find latest active session matching repository across candidate brains
                 res = self._find_latest_matching_session(repo, max_age_seconds=max_age_seconds)
                 if res:
-                    target_t_path = res[1]
+                    target_sid = res[0]
+
+        if not target_sid:
+            return None
+
+        root_sid, spawn_step = self.resolve_subagent_to_root(target_sid)
+        target_t_path: Optional[Path] = None
+
+        for brain in get_brain_dirs():
+            t_path = brain / root_sid / ".system_generated" / "logs" / "transcript.jsonl"
+            if t_path.exists():
+                target_t_path = t_path
+                break
 
         if not target_t_path or not target_t_path.exists():
             return None
@@ -1251,6 +1333,7 @@ class AntigravityAdapter(BaseIngestionAdapter):
             custom_patterns=custom_patterns,
             apply_session_excludes=apply_session_excludes,
             repo_root=repo,
+            until_step_index=spawn_step,
         )
 
 
@@ -1765,6 +1848,40 @@ class OpencodeAdapter(BaseIngestionAdapter):
             return s
         return str(raw_model)
 
+    def resolve_subagent_to_root(self, session_id: str, repo_root: Optional[Path] = None) -> Tuple[str, Optional[int]]:
+        """Resolves an Opencode subagent session to its root session ID and spawn timestamp."""
+        if not session_id:
+            return session_id, None
+        repo = repo_root or get_repo_root()
+        for db_path in self._get_db_paths(repo_root=repo):
+            try:
+                uri = db_path.resolve().as_uri() + "?mode=ro"
+                conn = sqlite3.connect(uri, uri=True, timeout=5.0)
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute("SELECT id, parent_id, time_created FROM session WHERE id = ? OR id LIKE ?", (session_id, f"{session_id}%"))
+                sess = cur.fetchone()
+                if not sess or not sess["parent_id"]:
+                    conn.close()
+                    continue
+                spawn_time = sess["time_created"]
+                root_sid = sess["parent_id"]
+                curr_parent = sess["parent_id"]
+                visited = {sess["id"]}
+                while curr_parent and curr_parent not in visited:
+                    visited.add(curr_parent)
+                    cur.execute("SELECT id, parent_id FROM session WHERE id = ?", (curr_parent,))
+                    p = cur.fetchone()
+                    if not p:
+                        break
+                    root_sid = p["id"]
+                    curr_parent = p["parent_id"]
+                conn.close()
+                return root_sid, spawn_time
+            except Exception:
+                continue
+        return session_id, None
+
     def _extract_session_from_db(
         self,
         db_path: Path,
@@ -1791,18 +1908,54 @@ class OpencodeAdapter(BaseIngestionAdapter):
             model_raw = sess["model"] if "model" in keys else None
             detected_model = self._parse_model_identifier(model_raw)
 
-            cur.execute(
-                """
+            spawn_time_ms: Optional[int] = None
+            if "parent_id" in keys and sess["parent_id"]:
+                spawn_time_ms = sess["time_created"] if "time_created" in keys else None
+                curr_parent = sess["parent_id"]
+                visited_pids = {sid}
+                while curr_parent and curr_parent not in visited_pids:
+                    visited_pids.add(curr_parent)
+                    cur.execute("SELECT * FROM session WHERE id = ?", (curr_parent,))
+                    p_sess = cur.fetchone()
+                    if not p_sess:
+                        break
+                    sid = p_sess["id"]
+                    sess = p_sess
+                    p_keys = p_sess.keys()
+                    ver = p_sess["version"] if "version" in p_keys and p_sess["version"] else ver
+                    p_model = p_sess["model"] if "model" in p_keys else None
+                    if p_model:
+                        detected_model = self._parse_model_identifier(p_model)
+                    curr_parent = p_sess["parent_id"] if "parent_id" in p_keys else None
+
+            query = """
                 SELECT m.id as msg_id, m.time_created as msg_time, m.data as msg_data,
                        p.id as part_id, p.time_created as part_time, p.data as part_data
                 FROM message m
                 JOIN part p ON p.message_id = m.id
                 WHERE m.session_id = ?
-                ORDER BY m.time_created ASC, p.time_created ASC
-                """,
-                (sid,),
-            )
+            """
+            params: List[Any] = [sid]
+            if spawn_time_ms is not None:
+                query += " AND m.time_created < ?"
+                params.append(spawn_time_ms)
+            query += " ORDER BY m.time_created ASC, p.time_created ASC"
+
+            cur.execute(query, tuple(params))
             rows = cur.fetchall()
+            if not rows and spawn_time_ms is not None:
+                cur.execute(
+                    """
+                    SELECT m.id as msg_id, m.time_created as msg_time, m.data as msg_data,
+                           p.id as part_id, p.time_created as part_time, p.data as part_data
+                    FROM message m
+                    JOIN part p ON p.message_id = m.id
+                    WHERE m.session_id = ?
+                    ORDER BY m.time_created ASC, p.time_created ASC
+                    """,
+                    (sid,),
+                )
+                rows = cur.fetchall()
             conn.close()
         except Exception:
             return None
@@ -2068,6 +2221,10 @@ class OpencodeAdapter(BaseIngestionAdapter):
             return []
 
         active_sid = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get("OPENCODE_CONVERSATION_ID")
+        active_root_sid: Optional[str] = None
+        if active_sid:
+            active_root_sid, _ = self.resolve_subagent_to_root(active_sid, repo_root=repo)
+
         worktree_paths = self._get_repo_worktree_paths(repo)
         repo_paths_str: List[str] = []
         for p in worktree_paths:
@@ -2097,16 +2254,17 @@ class OpencodeAdapter(BaseIngestionAdapter):
                 if repo_paths_str:
                     placeholders = ",".join(["?"] * len(repo_paths_str))
                     query = f"""
-                        SELECT s.id, s.title, s.directory, s.time_created, s.time_updated, s.version, s.model,
+                        SELECT s.id, s.parent_id, s.title, s.directory, s.time_created, s.time_updated, s.version, s.model,
                                MAX(CASE WHEN s.directory = ? OR s.directory = ? THEN 2
                                         WHEN s.directory IN ({placeholders}) THEN 2
                                         ELSE 1 END) as score
                         FROM session s
                         LEFT JOIN project p ON s.project_id = p.id
                         LEFT JOIN project_directory pd ON pd.project_id = s.project_id
-                        WHERE s.directory IN ({placeholders})
-                           OR p.worktree IN ({placeholders})
-                           OR pd.directory IN ({placeholders})
+                        WHERE (s.parent_id IS NULL OR s.parent_id = '')
+                          AND (s.directory IN ({placeholders})
+                               OR p.worktree IN ({placeholders})
+                               OR pd.directory IN ({placeholders}))
                         GROUP BY s.id
                         ORDER BY s.time_updated ASC
                     """
@@ -2116,12 +2274,12 @@ class OpencodeAdapter(BaseIngestionAdapter):
                         rows = cur.fetchall()
                     except Exception:
                         cur.execute(
-                            f"SELECT *, 2 as score FROM session WHERE directory IN ({placeholders}) ORDER BY time_updated ASC",
+                            f"SELECT *, 2 as score FROM session WHERE (parent_id IS NULL OR parent_id = '') AND directory IN ({placeholders}) ORDER BY time_updated ASC",
                             repo_paths_str,
                         )
                         rows = cur.fetchall()
                 else:
-                    cur.execute("SELECT *, 1 as score FROM session ORDER BY time_updated ASC")
+                    cur.execute("SELECT *, 1 as score FROM session WHERE (parent_id IS NULL OR parent_id = '') ORDER BY time_updated ASC")
                     rows = cur.fetchall()
 
                 conn.close()
@@ -2129,6 +2287,8 @@ class OpencodeAdapter(BaseIngestionAdapter):
                 continue
 
             for r in rows:
+                if "parent_id" in r.keys() and r["parent_id"]:
+                    continue
                 sid = r["id"]
                 if sid in seen_sids:
                     continue
@@ -2154,7 +2314,7 @@ class OpencodeAdapter(BaseIngestionAdapter):
                     first_line = first_line[:77] + "..."
 
                 score = r["score"] if "score" in r.keys() else 1
-                is_active = (sid == active_sid) or (active_sid is None and sid == rows[-1]["id"] and self.is_active(repo))
+                is_active = (sid == active_sid or (active_root_sid is not None and sid == active_root_sid)) or (active_sid is None and sid == rows[-1]["id"] and self.is_active(repo))
                 match_scope = "exact worktree" if score >= 2 else "repo"
                 mtime = ((r["time_updated"] if "time_updated" in r.keys() else 0) or (r["time_created"] if "time_created" in r.keys() else 0) or 0) / 1000.0
 
@@ -2712,6 +2872,15 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
         # Sort reverse-chronologically so causal prompt is at the top
         target_prompts.sort(key=lambda p: parse_timestamp_sort_key(p.timestamp), reverse=True)
 
+        def is_same_or_child_session(sid: str) -> bool:
+            if sid == session_id:
+                return True
+            if adapter and hasattr(adapter, "resolve_subagent_to_root"):
+                root, _ = adapter.resolve_subagent_to_root(sid)
+                if root == session_id:
+                    return True
+            return False
+
         if target_prompts:
             new_note = SessionNote(
                 session_id=session_id,
@@ -2720,10 +2889,10 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
                 recorded_at=datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
                 prompts=target_prompts,
             )
-            other_notes = [n for n in existing_notes if n.session_id != session_id]
+            other_notes = [n for n in existing_notes if not is_same_or_child_session(n.session_id)]
             all_notes = other_notes + [new_note]
         else:
-            other_notes = [n for n in existing_notes if n.session_id != session_id]
+            other_notes = [n for n in existing_notes if not is_same_or_child_session(n.session_id)]
             all_notes = other_notes
 
     merged = merge_session_notes(all_notes)
@@ -4006,6 +4175,17 @@ def cmd_session(args: argparse.Namespace) -> int:
     t_path = None
     raw_data = None
     if session_id:
+        agy = REGISTRY.get("antigravity")
+        if isinstance(agy, AntigravityAdapter):
+            root_sid, _ = agy.resolve_subagent_to_root(session_id)
+            if root_sid:
+                session_id = root_sid
+        oc = REGISTRY.get("opencode")
+        if isinstance(oc, OpencodeAdapter):
+            root_sid, _ = oc.resolve_subagent_to_root(session_id, repo_root=repo_root)
+            if root_sid:
+                session_id = root_sid
+
         s_dir = find_session_dir(session_id)
         if s_dir:
             cand = s_dir / ".system_generated" / "logs" / "transcript.jsonl"
@@ -4036,8 +4216,12 @@ def cmd_session(args: argparse.Namespace) -> int:
                     pass
         if env_sid:
             adapter = REGISTRY.get("antigravity")
-            if isinstance(adapter, AntigravityAdapter) and not adapter._session_matches_repo(env_sid, repo_root):
-                env_sid = None
+            if isinstance(adapter, AntigravityAdapter):
+                root_sid, _ = adapter.resolve_subagent_to_root(env_sid)
+                if root_sid:
+                    env_sid = root_sid
+                if not adapter._session_matches_repo(env_sid, repo_root):
+                    env_sid = None
         if env_sid:
             s_dir = find_session_dir(env_sid)
             if s_dir:
