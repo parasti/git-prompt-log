@@ -3401,6 +3401,18 @@ def strip_ansi(text: str) -> str:
 
 COMMIT_LINE_RE = re.compile(r"^([|*\\/ _-]*)(commit\s+[0-9a-f]{7,40})")
 NOTES_HEADER_RE = re.compile(r"^([|*\\/ _-]*)(Notes(?: \([^)]+\))?:)\s*$")
+DIFF_START_RE = re.compile(
+    r"^(?:"
+    r"diff --(?:git|cc|combined)\b"
+    r"|---\s*$"
+    r"| [^|\n]+\s+\|\s+(?:\d+|Bin\b)"
+    r"| \d+ files? changed\b"
+    r"|--- (?:[ab]/|/dev/null)"
+    r"|index [0-9a-f]{7,40}\.\.[0-9a-f]{7,40}"
+    r"|(?:\d+|-)\t(?:\d+|-)\t"
+    r"|:\d{6}\s+\d{6}\s+"
+    r")"
+)
 
 
 def format_prompt_note_block(
@@ -3538,10 +3550,11 @@ def stream_git_log_lines(
                         in_message = True
                 else:
                     if not has_notes and not in_notes:
-                        if after_graph.startswith("diff --git ") or (after_graph.startswith(" ") and "|" in after_graph) or after_graph.startswith("--- "):
-                            yield format_prompt_note_block("", current_graph_prefix, full=full, use_color=use_color, leading_blank=not last_line_blank)
-                            has_notes = True
-                            last_line_blank = True
+                        if not after_graph.startswith("    ") and not after_graph.startswith("\t"):
+                            if DIFF_START_RE.match(after_graph):
+                                yield format_prompt_note_block("", current_graph_prefix, full=full, use_color=use_color, leading_blank=not last_line_blank)
+                                has_notes = True
+                                last_line_blank = True
 
                 last_line_blank = (clean_line.strip() == clean_graph)
                 yield raw_line

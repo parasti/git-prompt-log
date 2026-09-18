@@ -4086,6 +4086,78 @@ class TestGitPromptLogStreaming(unittest.TestCase):
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("unrecognized argument: --no-pager", res.stderr)
 
+    def test_log_commit_message_with_pipe_character_does_not_duplicate_or_split_prompt(self):
+        # A commit message containing mathematical/syntax pipe characters like `|c|` or `|`
+        # should not trigger false-positive stat detection.
+        f = self.repo_dir / "pipe_test.txt"
+        f.write_text("math content")
+        subprocess.run(["git", "add", "pipe_test.txt"], cwd=self.repo_dir, check=True)
+        msg = "math: Handle opposite hemisphere\n\nWhen interpolating (1 - |c| < TINY), take fallback."
+        subprocess.run(["git", "commit", "-m", msg], cwd=self.repo_dir, check=True)
+        subprocess.run(
+            ["python3", self.script_path, "record", "-m", "Prompt for math commit", "-c", "HEAD"],
+            cwd=self.repo_dir,
+            check=True,
+            capture_output=True,
+        )
+
+        res = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "1"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertNotIn("none recorded", res.stdout)
+        self.assertNotIn("Prompt:", res.stdout)
+        self.assertIn("Prompt for math commit", res.stdout)
+        self.assertIn("1 - |c| < TINY", res.stdout)
+        # Should only have one prompt header block in total
+        self.assertEqual(res.stdout.count("Prompt ("), 1)
+
+    def test_log_unprompted_commit_message_with_pipe_character(self):
+        # An unprompted commit message containing `|` should have "none recorded"
+        # emitted after the message, not inside it.
+        f = self.repo_dir / "table_test.txt"
+        f.write_text("table content")
+        subprocess.run(["git", "add", "table_test.txt"], cwd=self.repo_dir, check=True)
+        msg = "doc: Add table\n\nHere is a table:\n    | Col A | Col B |\n    | Value | Other |"
+        subprocess.run(["git", "commit", "-m", msg], cwd=self.repo_dir, check=True)
+
+        res = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "1"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(res.stdout.count("Prompt:"), 1)
+        self.assertIn("none recorded", res.stdout)
+        # The prompt placeholder must appear after the table in the message body
+        table_idx = res.stdout.index("| Col A | Col B |")
+        prompt_idx = res.stdout.index("Prompt:\n    none recorded")
+        self.assertGreater(prompt_idx, table_idx)
+
+    def test_log_unprompted_commit_with_stat_places_prompt_before_stat(self):
+        # On an unprompted commit with --stat, "Prompt: none recorded" must appear before stat lines
+        f = self.repo_dir / "stat_test.txt"
+        f.write_text("stat test")
+        subprocess.run(["git", "add", "stat_test.txt"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "chore: unprompted stat commit"], cwd=self.repo_dir, check=True)
+
+        res = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "1", "--stat"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(res.stdout.count("Prompt:"), 1)
+        self.assertIn("none recorded", res.stdout)
+        prompt_idx = res.stdout.index("Prompt:\n    none recorded")
+        stat_idx = res.stdout.index("stat_test.txt |")
+        self.assertLess(prompt_idx, stat_idx)
+
 
 if __name__ == "__main__":
     unittest.main()
