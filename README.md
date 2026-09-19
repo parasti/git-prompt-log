@@ -91,7 +91,7 @@ git prompt-log -p
 git prompt-log --stat
 git prompt-log --graph main..HEAD
 
-# View cumulative prompt history instead of only the active prompt:
+# View cumulative prompt history instead of only the last 4 prompts:
 git prompt-log --prompt-full
 # or explicit subcommand:
 git prompt-log log --prompt-full

@@ -24,6 +24,7 @@ from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 
 DEFAULT_NOTES_REF = "refs/notes/commits"
+DEFAULT_LOG_PROMPT_LIMIT = 4
 TOOL_GITHUB_URL = "https://github.com/parasti/git-prompt-log"
 
 
@@ -3424,6 +3425,7 @@ def format_prompt_note_block(
     full: bool = False,
     use_color: bool = False,
     leading_blank: bool = False,
+    prompt_limit: int = DEFAULT_LOG_PROMPT_LIMIT,
 ) -> str:
     """Formats a git note into a clean, human-readable prompt block."""
     notes = parse_notes(raw_note) if raw_note else []
@@ -3439,12 +3441,27 @@ def format_prompt_note_block(
     dot = " \u00b7 "
     if not full:
         all_prompts = [(n, p) for n in notes for p in n.prompts]
-        n, active_p = max(all_prompts, key=lambda pair: parse_timestamp_sort_key(pair[1].timestamp))
-        header_parts = [p for p in (n.harness, n.model) if p]
-        hdr = f" ({dot.join(header_parts)})" if header_parts else ""
-        out.append(f"{graph_prefix}{c_bold}Prompt{hdr}:{c_reset}\n")
-        indented = active_p.text.replace("\n", f"\n{graph_prefix}    ")
-        out.append(f"{graph_prefix}    {c_cyan}[{active_p.timestamp}]{c_reset} {indented}\n{graph_prefix}\n")
+        all_prompts.sort(key=lambda pair: parse_timestamp_sort_key(pair[1].timestamp), reverse=True)
+        selected = all_prompts[:prompt_limit]
+
+        # Group selected prompts by session preserving reverse-chronological order
+        session_groups: List[Tuple[SessionNote, List[PromptEntry]]] = []
+        for n, p in selected:
+            if session_groups and session_groups[-1][0].session_id == n.session_id:
+                session_groups[-1][1].append(p)
+            else:
+                session_groups.append((n, [p]))
+
+        total_selected = len(selected)
+        for n, group_prompts in session_groups:
+            header_parts = [p for p in (n.harness, n.model) if p]
+            hdr = f" ({dot.join(header_parts)})" if header_parts else ""
+            label = "Prompts" if total_selected > 1 else "Prompt"
+            out.append(f"{graph_prefix}{c_bold}{label}{hdr}:{c_reset}\n")
+            for p in group_prompts:
+                indented = p.text.replace("\n", f"\n{graph_prefix}    ")
+                out.append(f"{graph_prefix}    {c_cyan}[{p.timestamp}]{c_reset} {indented}\n")
+            out.append(f"{graph_prefix}\n")
     else:
         for n in notes:
             header_parts = [p for p in (n.harness, n.model) if p]
@@ -3463,6 +3480,7 @@ def stream_git_log_lines(
     full: bool = False,
     use_color: bool = False,
     status_holder: Optional[Dict[str, int]] = None,
+    prompt_limit: int = DEFAULT_LOG_PROMPT_LIMIT,
 ) -> Iterator[str]:
     """
     Executes git log and yields filtered output lines, replacing Notes:
@@ -3497,10 +3515,10 @@ def stream_git_log_lines(
                 m_commit = COMMIT_LINE_RE.match(clean_line)
                 if m_commit:
                     if in_commit and not has_notes and in_message:
-                        yield format_prompt_note_block("", current_graph_prefix, full=full, use_color=use_color, leading_blank=not last_line_blank)
+                        yield format_prompt_note_block("", current_graph_prefix, full=full, use_color=use_color, leading_blank=not last_line_blank, prompt_limit=prompt_limit)
                         last_line_blank = True
                     elif in_notes:
-                        yield format_prompt_note_block("".join(notes_lines), current_graph_prefix, full=full, use_color=use_color, leading_blank=False)
+                        yield format_prompt_note_block("".join(notes_lines), current_graph_prefix, full=full, use_color=use_color, leading_blank=False, prompt_limit=prompt_limit)
                         in_notes = False
                         notes_lines = []
                         last_line_blank = True
@@ -3539,7 +3557,7 @@ def stream_git_log_lines(
                         continue
                     else:
                         in_notes = False
-                        yield format_prompt_note_block("".join(notes_lines), current_graph_prefix, full=full, use_color=use_color, leading_blank=False)
+                        yield format_prompt_note_block("".join(notes_lines), current_graph_prefix, full=full, use_color=use_color, leading_blank=False, prompt_limit=prompt_limit)
                         notes_lines = []
                         last_line_blank = True
 
@@ -3555,7 +3573,7 @@ def stream_git_log_lines(
                     if not has_notes and not in_notes:
                         if not after_graph.startswith("    ") and not after_graph.startswith("\t"):
                             if DIFF_START_RE.match(after_graph):
-                                yield format_prompt_note_block("", current_graph_prefix, full=full, use_color=use_color, leading_blank=not last_line_blank)
+                                yield format_prompt_note_block("", current_graph_prefix, full=full, use_color=use_color, leading_blank=not last_line_blank, prompt_limit=prompt_limit)
                                 has_notes = True
                                 last_line_blank = True
 
@@ -3563,9 +3581,9 @@ def stream_git_log_lines(
                 yield raw_line
 
         if in_notes:
-            yield format_prompt_note_block("".join(notes_lines), current_graph_prefix, full=full, use_color=use_color, leading_blank=False)
+            yield format_prompt_note_block("".join(notes_lines), current_graph_prefix, full=full, use_color=use_color, leading_blank=False, prompt_limit=prompt_limit)
         elif in_commit and not has_notes and in_message:
-            yield format_prompt_note_block("", current_graph_prefix, full=full, use_color=use_color, leading_blank=not last_line_blank)
+            yield format_prompt_note_block("", current_graph_prefix, full=full, use_color=use_color, leading_blank=not last_line_blank, prompt_limit=prompt_limit)
 
     finally:
         try:
@@ -3607,6 +3625,7 @@ def cmd_log(args: argparse.Namespace, git_args: Optional[List[str]] = None) -> i
     repo_root = get_repo_root()
     ref = getattr(args, "prompt_ref", None) or getattr(args, "ref", DEFAULT_NOTES_REF) or DEFAULT_NOTES_REF
     full = getattr(args, "prompt_full", False) or getattr(args, "full", False)
+    prompt_limit = getattr(args, "prompt_limit", DEFAULT_LOG_PROMPT_LIMIT)
 
     forwarded: List[str] = list(git_args) if git_args is not None else []
     if git_args is None:
@@ -3653,7 +3672,7 @@ def cmd_log(args: argparse.Namespace, git_args: Optional[List[str]] = None) -> i
     status_holder: Dict[str, int] = {}
     try:
         with StreamingPager(repo_root=repo_root) as pager:
-            for chunk in stream_git_log_lines(git_cmd, repo_root=repo_root, full=full, use_color=use_color, status_holder=status_holder):
+            for chunk in stream_git_log_lines(git_cmd, repo_root=repo_root, full=full, use_color=use_color, status_holder=status_holder, prompt_limit=prompt_limit):
                 pager.write(chunk)
     except (BrokenPipeError, KeyboardInterrupt):
         return 0
@@ -4775,7 +4794,7 @@ def main():
         "--prompts-full",
         dest="prompt_full",
         action="store_true",
-        help="Display full cumulative prompts instead of active prompt",
+        help="Display full cumulative prompts instead of the last 4 prompts",
     )
     parser.add_argument(
         "--prompt-ref",
@@ -4919,7 +4938,7 @@ def main():
         "--prompts-full",
         dest="prompt_full",
         action="store_true",
-        help="Display full cumulative prompts instead of active prompt",
+        help="Display full cumulative prompts instead of the last 4 prompts",
     )
     p_log.add_argument(
         "--prompt-ref",

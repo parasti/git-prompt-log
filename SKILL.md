@@ -51,7 +51,7 @@ git prompt-log -n 2 -p
 git prompt-log --stat
 git prompt-log --graph main..HEAD
 
-# View full cumulative prompts per commit (instead of just active causal prompt)
+# View full cumulative prompts per commit (instead of just the last 4 prompts)
 git prompt-log --prompt-full
 # or:
 git prompt-log log --prompt-full

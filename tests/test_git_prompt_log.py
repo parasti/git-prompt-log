@@ -3937,13 +3937,18 @@ class TestGitPromptLogStreaming(unittest.TestCase):
         self.assertNotIn("feat: commit 3", res.stdout)
 
     def test_log_full_displays_all_prompts(self):
-        # Attach a second prompt to HEAD
+        # Attach 4 earlier prompts to HEAD so total prompts is 5
         note_content = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
         notes = gpn.parse_notes(note_content)
-        notes[0].prompts.append(gpn.PromptEntry("2026-09-04 10:00:00 UTC", "Second earlier prompt"))
+        notes[0].prompts.extend([
+            gpn.PromptEntry("2026-09-04 10:00:00 UTC", "Earlier prompt 1"),
+            gpn.PromptEntry("2026-09-04 09:00:00 UTC", "Earlier prompt 2"),
+            gpn.PromptEntry("2026-09-04 08:00:00 UTC", "Earlier prompt 3"),
+            gpn.PromptEntry("2026-09-04 07:00:00 UTC", "Fifth oldest prompt"),
+        ])
         gpn.write_note_content("HEAD", gpn.serialize_notes(notes), repo_root=self.repo_dir)
 
-        # Standard log only shows active prompt
+        # Standard log shows the last 4 prompts, omitting older prompts
         res_standard = subprocess.run(
             ["python3", self.script_path, "log", "-n", "1"],
             cwd=self.repo_dir,
@@ -3952,7 +3957,10 @@ class TestGitPromptLogStreaming(unittest.TestCase):
             check=True,
         )
         self.assertIn("Prompt for commit 5", res_standard.stdout)
-        self.assertNotIn("Second earlier prompt", res_standard.stdout)
+        self.assertIn("Earlier prompt 1", res_standard.stdout)
+        self.assertIn("Earlier prompt 2", res_standard.stdout)
+        self.assertIn("Earlier prompt 3", res_standard.stdout)
+        self.assertNotIn("Fifth oldest prompt", res_standard.stdout)
 
         # Full log shows all prompts with namespaced --prompt-full
         res_full = subprocess.run(
@@ -3963,7 +3971,7 @@ class TestGitPromptLogStreaming(unittest.TestCase):
             check=True,
         )
         self.assertIn("Prompt for commit 5", res_full.stdout)
-        self.assertIn("Second earlier prompt", res_full.stdout)
+        self.assertIn("Fifth oldest prompt", res_full.stdout)
 
         # Alias --prompts-full also works
         res_full_alias = subprocess.run(
@@ -3974,7 +3982,48 @@ class TestGitPromptLogStreaming(unittest.TestCase):
             check=True,
         )
         self.assertIn("Prompt for commit 5", res_full_alias.stdout)
-        self.assertIn("Second earlier prompt", res_full_alias.stdout)
+        self.assertIn("Fifth oldest prompt", res_full_alias.stdout)
+
+    def test_log_shows_last_four_prompts(self):
+        # Attach 6 prompts with distinct timestamps to HEAD
+        note_content = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        notes = gpn.parse_notes(note_content)
+        notes[0].prompts = [
+            gpn.PromptEntry("2026-09-04 12:00:00 UTC", "Prompt 6 (causal)"),
+            gpn.PromptEntry("2026-09-04 11:00:00 UTC", "Prompt 5 (context 3)"),
+            gpn.PromptEntry("2026-09-04 10:00:00 UTC", "Prompt 4 (context 2)"),
+            gpn.PromptEntry("2026-09-04 09:00:00 UTC", "Prompt 3 (context 1)"),
+            gpn.PromptEntry("2026-09-04 08:00:00 UTC", "Prompt 2 (older)"),
+            gpn.PromptEntry("2026-09-04 07:00:00 UTC", "Prompt 1 (oldest)"),
+        ]
+        gpn.write_note_content("HEAD", gpn.serialize_notes(notes), repo_root=self.repo_dir)
+
+        res = subprocess.run(
+            ["python3", self.script_path, "log", "-n", "1"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        # Header is plural Prompts when multiple prompts are shown
+        self.assertIn("Prompts (", res.stdout)
+        # Causal prompt and preceding 3 context prompts are displayed
+        self.assertIn("Prompt 6 (causal)", res.stdout)
+        self.assertIn("Prompt 5 (context 3)", res.stdout)
+        self.assertIn("Prompt 4 (context 2)", res.stdout)
+        self.assertIn("Prompt 3 (context 1)", res.stdout)
+        # Prompts beyond the last 4 are not displayed
+        self.assertNotIn("Prompt 2 (older)", res.stdout)
+        self.assertNotIn("Prompt 1 (oldest)", res.stdout)
+
+        # Causal prompt appears before preceding context prompts
+        idx_causal = res.stdout.index("Prompt 6 (causal)")
+        idx_ctx3 = res.stdout.index("Prompt 5 (context 3)")
+        idx_ctx2 = res.stdout.index("Prompt 4 (context 2)")
+        idx_ctx1 = res.stdout.index("Prompt 3 (context 1)")
+        self.assertLess(idx_causal, idx_ctx3)
+        self.assertLess(idx_ctx3, idx_ctx2)
+        self.assertLess(idx_ctx2, idx_ctx1)
 
     def test_log_forwarded_flags_full_history(self):
         # Verify git log's native --full-history is not intercepted or collided with
