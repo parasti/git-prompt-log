@@ -4332,6 +4332,49 @@ class TestSessionDropTrailAndExportSafety(unittest.TestCase):
         self.assertIn("Refactor data parsing logic", res.stdout)
         self.assertIn("Add unit test coverage", res.stdout)
 
+    def test_find_commits_with_session_note_handles_shared_blobs(self):
+        """Regression: commits sharing identical note blobs must not cause stream
+        desynchronization in cat-file --batch and must all be returned."""
+        (self.repo_dir / "f4.txt").write_text("4")
+        subprocess.run(["git", "add", "."], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: step 4"], cwd=self.repo_dir, check=True, capture_output=True)
+        c4 = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+
+        (self.repo_dir / "f5.txt").write_text("5")
+        subprocess.run(["git", "add", "."], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: step 5"], cwd=self.repo_dir, check=True, capture_output=True)
+        c5 = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+
+        shared_note_unrelated = (
+            "Assistant-Session: unrelated-session\n"
+            "Assistant-Harness: Manual\n"
+            "Assistant-Model: Manual\n"
+            "Assistant-Recorded: 2026-09-18 06:00:00 UTC\n\n"
+            "Assistant-Prompts:\n"
+            "  [2026-09-18 06:00:00 UTC] Unrelated task\n"
+        )
+        gpn.write_note_content(c4, shared_note_unrelated, repo_root=self.repo_dir)
+        gpn.write_note_content(c5, shared_note_unrelated, repo_root=self.repo_dir)
+
+        (self.repo_dir / "f6.txt").write_text("6")
+        subprocess.run(["git", "add", "."], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: step 6"], cwd=self.repo_dir, check=True, capture_output=True)
+        c6 = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+
+        note_c1 = gpn.get_note_content("HEAD~5", repo_root=self.repo_dir)
+        gpn.write_note_content(c6, note_c1, repo_root=self.repo_dir)
+
+        found = gpn.find_commits_with_session_note(self.session_id, repo_root=self.repo_dir)
+        c1 = subprocess.check_output(["git", "rev-parse", "HEAD~5"], cwd=self.repo_dir, text=True).strip()
+        c2 = subprocess.check_output(["git", "rev-parse", "HEAD~4"], cwd=self.repo_dir, text=True).strip()
+        c3 = subprocess.check_output(["git", "rev-parse", "HEAD~3"], cwd=self.repo_dir, text=True).strip()
+        self.assertIn(c1, found)
+        self.assertIn(c2, found)
+        self.assertIn(c3, found)
+        self.assertIn(c6, found)
+        self.assertNotIn(c4, found)
+        self.assertNotIn(c5, found)
+
 
 if __name__ == "__main__":
     unittest.main()

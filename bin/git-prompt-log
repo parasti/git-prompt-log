@@ -4201,18 +4201,18 @@ def find_commits_with_session_note(
     if not lines:
         return []
 
-    blob_to_commit: Dict[str, str] = {}
+    blob_to_commits: Dict[str, List[str]] = defaultdict(list)
     for blob_sha, commit_sha in lines:
-        blob_to_commit[blob_sha] = commit_sha
+        blob_to_commits[blob_sha].append(commit_sha)
 
-    input_data = "\n".join(blob_to_commit.keys()) + "\n"
+    input_data = "\n".join(blob_to_commits.keys()) + "\n"
     code, batch_out, _ = run_git(["cat-file", "--batch"], input_text=input_data, repo_root=repo_root)
     if code != 0 or not batch_out:
         return []
 
     matching_commits: List[str] = []
     idx = 0
-    for blob_sha, commit_sha in lines:
+    for blob_sha, commit_list in blob_to_commits.items():
         header_end = batch_out.find("\n", idx)
         if header_end == -1:
             break
@@ -4224,7 +4224,7 @@ def find_commits_with_session_note(
             content = batch_out[content_start:content_start + size]
             idx = content_start + size + 1
             if session_id in content:
-                matching_commits.append(commit_sha)
+                matching_commits.extend(commit_list)
             else:
                 notes = parse_notes(content)
                 for n in notes:
@@ -4233,7 +4233,7 @@ def find_commits_with_session_note(
                         if hasattr(ad, "resolve_subagent_to_root"):
                             root, _ = ad.resolve_subagent_to_root(n.session_id)
                             if root == session_id:
-                                matching_commits.append(commit_sha)
+                                matching_commits.extend(commit_list)
                                 matched = True
                                 break
                     if matched:
