@@ -4159,6 +4159,180 @@ class TestGitPromptLogStreaming(unittest.TestCase):
         self.assertLess(prompt_idx, stat_idx)
 
 
+class TestSessionDropTrailAndExportSafety(unittest.TestCase):
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.repo_dir = Path(self.tmp_dir.name) / "repo"
+        self.repo_dir.mkdir()
+        self.brain_dir = Path(self.tmp_dir.name) / "brain"
+        self.brain_dir.mkdir()
+
+        subprocess.run(["git", "init", "-b", "main"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.repo_dir, check=True)
+
+        # Base commit
+        (self.repo_dir / "base.txt").write_text("base")
+        subprocess.run(["git", "add", "."], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "chore: base"], cwd=self.repo_dir, check=True, capture_output=True)
+
+        self.session_id = "test-session-drop-trail-uuid"
+        sdir = self.brain_dir / self.session_id / ".system_generated" / "logs"
+        sdir.mkdir(parents=True, exist_ok=True)
+        self.transcript_path = sdir / "transcript.jsonl"
+
+        self.steps = [
+            {"step_index": 1, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-18T05:00:00Z", "content": "<USER_REQUEST>Initial implementation plan</USER_REQUEST>"},
+            {"step_index": 2, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-18T05:10:00Z", "content": "<USER_REQUEST>Accidental Secret Token: sk-secret12345</USER_REQUEST>"},
+            {"step_index": 3, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-18T05:20:00Z", "content": "<USER_REQUEST>Refactor data parsing logic</USER_REQUEST>"},
+            {"step_index": 4, "source": "USER_EXPLICIT", "type": "USER_INPUT", "created_at": "2026-09-18T05:30:00Z", "content": "<USER_REQUEST>Add unit test coverage</USER_REQUEST>"},
+        ]
+        with open(self.transcript_path, "w", encoding="utf-8") as f:
+            for s in self.steps:
+                f.write(json.dumps(s) + "\n")
+
+        self.env = os.environ.copy()
+        self.env["AGY_SESSION_ID"] = self.session_id
+        self.env["ANTIGRAVITY_DATA_DIR"] = str(self.brain_dir.parent)
+        for k in ("CLAUDE_CODE_SESSION_ID", "OPENCODE_SESSION_ID", "OPENCODE_CONVERSATION_ID", "PROMPT_LOG_HARNESS"):
+            self.env.pop(k, None)
+
+        self.script_path = str(bin_path)
+
+        # Commit 1 (made at 05:15:00, after prompt 1 & 2)
+        (self.repo_dir / "f1.txt").write_text("1")
+        subprocess.run(["git", "add", "."], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: step 1", "--date", "2026-09-18T05:15:00Z"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["python3", self.script_path, "record", "-c", "HEAD", "--session", self.session_id], cwd=self.repo_dir, env=self.env, check=True, capture_output=True)
+
+        # Commit 2 (made at 05:25:00, after prompt 3)
+        (self.repo_dir / "f2.txt").write_text("2")
+        subprocess.run(["git", "add", "."], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: step 2", "--date", "2026-09-18T05:25:00Z"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["python3", self.script_path, "record", "-c", "HEAD", "--session", self.session_id], cwd=self.repo_dir, env=self.env, check=True, capture_output=True)
+
+        # Commit 3 (made at 05:35:00, after prompt 4)
+        (self.repo_dir / "f3.txt").write_text("3")
+        subprocess.run(["git", "add", "."], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: step 3", "--date", "2026-09-18T05:35:00Z"], cwd=self.repo_dir, check=True, capture_output=True)
+        subprocess.run(["python3", self.script_path, "record", "-c", "HEAD", "--session", self.session_id], cwd=self.repo_dir, env=self.env, check=True, capture_output=True)
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def test_session_drop_updates_all_session_commits_by_default(self):
+        # Verify all 3 commits have the accidental secret before drop
+        for c in ("HEAD~2", "HEAD~1", "HEAD"):
+            out = subprocess.check_output(["python3", self.script_path, "show", c], cwd=self.repo_dir, env=self.env, text=True)
+            self.assertIn("sk-secret12345", out)
+
+        # Drop prompt 2 without passing -c / --commit
+        res = subprocess.run(
+            ["python3", self.script_path, "session", "drop", "2", "--session", self.session_id],
+            cwd=self.repo_dir,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("Updated prompt notes on 3 commits", res.stdout)
+
+        # Verify the secret is pruned from all 3 commits
+        for c in ("HEAD~2", "HEAD~1", "HEAD"):
+            out = subprocess.check_output(["python3", self.script_path, "show", c], cwd=self.repo_dir, env=self.env, text=True)
+            self.assertNotIn("sk-secret12345", out)
+
+        # Verify other prompts remain intact on the commits
+        out_c1 = subprocess.check_output(["python3", self.script_path, "show", "HEAD~2"], cwd=self.repo_dir, env=self.env, text=True)
+        self.assertIn("Initial implementation plan", out_c1)
+
+        out_c3 = subprocess.check_output(["python3", self.script_path, "show", "HEAD"], cwd=self.repo_dir, env=self.env, text=True)
+        self.assertIn("Add unit test coverage", out_c3)
+        self.assertIn("Refactor data parsing logic", out_c3)
+        self.assertIn("Initial implementation plan", out_c3)
+
+    def test_session_undrop_and_clear_restores_all_session_commits_by_default(self):
+        # Drop prompt 2 from all commits
+        subprocess.run(["python3", self.script_path, "session", "drop", "2", "--session", self.session_id], cwd=self.repo_dir, env=self.env, check=True, capture_output=True)
+        for c in ("HEAD~2", "HEAD~1", "HEAD"):
+            out = subprocess.check_output(["python3", self.script_path, "show", c], cwd=self.repo_dir, env=self.env, text=True)
+            self.assertNotIn("sk-secret12345", out)
+
+        # Undrop prompt 2 without passing -c
+        res_undrop = subprocess.run(
+            ["python3", self.script_path, "session", "undrop", "2", "--session", self.session_id],
+            cwd=self.repo_dir,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("Updated prompt notes on 3 commits", res_undrop.stdout)
+        for c in ("HEAD~2", "HEAD~1", "HEAD"):
+            out = subprocess.check_output(["python3", self.script_path, "show", c], cwd=self.repo_dir, env=self.env, text=True)
+            self.assertIn("sk-secret12345", out)
+
+        # Drop again and clear
+        subprocess.run(["python3", self.script_path, "session", "drop", "2", "--session", self.session_id], cwd=self.repo_dir, env=self.env, check=True, capture_output=True)
+        res_clear = subprocess.run(
+            ["python3", self.script_path, "session", "clear", "--session", self.session_id],
+            cwd=self.repo_dir,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("Updated prompt notes on 3 commits", res_clear.stdout)
+        for c in ("HEAD~2", "HEAD~1", "HEAD"):
+            out = subprocess.check_output(["python3", self.script_path, "show", c], cwd=self.repo_dir, env=self.env, text=True)
+            self.assertIn("sk-secret12345", out)
+
+    def test_session_drop_with_explicit_commit_only_updates_target(self):
+        # Drop prompt 2 with explicit -c HEAD only
+        res = subprocess.run(
+            ["python3", self.script_path, "session", "drop", "2", "-c", "HEAD", "--session", self.session_id],
+            cwd=self.repo_dir,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("Updated prompt note on HEAD", res.stdout)
+
+        # HEAD note is pruned
+        out_head = subprocess.check_output(["python3", self.script_path, "show", "HEAD"], cwd=self.repo_dir, env=self.env, text=True)
+        self.assertNotIn("sk-secret12345", out_head)
+
+        # Older commit note was left untouched because of explicit -c HEAD
+        out_older = subprocess.check_output(["python3", self.script_path, "show", "HEAD~2"], cwd=self.repo_dir, env=self.env, text=True)
+        self.assertIn("sk-secret12345", out_older)
+
+    def test_export_excludes_dropped_prompts_safety_net(self):
+        # In this scenario, simulate an older commit that still has a stale note containing the secret
+        # (e.g. dropped with -c HEAD or before notes were pruned).
+        subprocess.run(["python3", self.script_path, "session", "drop", "2", "-c", "HEAD", "--session", self.session_id], cwd=self.repo_dir, env=self.env, check=True, capture_output=True)
+
+        # Verify HEAD~2 still has the note with the secret on disk
+        raw_older = gpn.get_note_content("HEAD~2", repo_root=self.repo_dir)
+        self.assertIn("sk-secret12345", raw_older)
+
+        # Run export across the whole range
+        res = subprocess.run(
+            ["python3", self.script_path, "export", "--range", "HEAD~3..HEAD", "--stdout"],
+            cwd=self.repo_dir,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        # Even though HEAD~2's git note has the secret on disk, export must filter it out
+        self.assertNotIn("sk-secret12345", res.stdout)
+        self.assertIn("Initial implementation plan", res.stdout)
+        self.assertIn("Refactor data parsing logic", res.stdout)
+        self.assertIn("Add unit test coverage", res.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
 

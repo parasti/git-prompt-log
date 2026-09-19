@@ -3709,14 +3709,36 @@ def cmd_export_log(args: argparse.Namespace) -> int:
         c_code, c_subj, _ = run_git(["log", "-n", "1", "--format=%s", sha], repo_root=repo_root)
         raw = get_note_content(sha, ref=ref, repo_root=repo_root)
         notes = parse_notes(raw) if raw else []
-        if notes:
+        filtered_notes = []
+        for n in notes:
+            root_sid = n.session_id
+            for ad in REGISTRY.list_adapters():
+                if hasattr(ad, "resolve_subagent_to_root"):
+                    cand, _ = ad.resolve_subagent_to_root(n.session_id)
+                    if cand:
+                        root_sid = cand
+                        break
+            kept = apply_session_excludes_filter(root_sid, n.prompts, repo_root=repo_root)
+            if root_sid != n.session_id:
+                kept = apply_session_excludes_filter(n.session_id, kept, repo_root=repo_root)
+            if kept:
+                filtered_notes.append(
+                    SessionNote(
+                        session_id=n.session_id,
+                        harness=n.harness,
+                        model=n.model,
+                        recorded_at=n.recorded_at,
+                        prompts=kept,
+                    )
+                )
+        if filtered_notes:
             commit_entries.append({
                 "hash": sha,
                 "subject": c_subj or "",
-                "note_raw": raw.strip(),
-                "notes": notes,
+                "note_raw": serialize_notes(filtered_notes).strip(),
+                "notes": filtered_notes,
             })
-            all_session_notes.extend(notes)
+            all_session_notes.extend(filtered_notes)
 
     if not commit_entries:
         sys.stderr.write(f"Warning: No prompt notes found on commits in range '{commit_range}'.\n")
@@ -4163,6 +4185,139 @@ def _show_session_timeline_with_commits(
     return 0
 
 
+def find_commits_with_session_note(
+    session_id: str,
+    ref: str = DEFAULT_NOTES_REF,
+    repo_root: Optional[Path] = None,
+) -> List[str]:
+    """
+    Finds all commit hashes in git notes that contain notes from session_id or its subagents.
+    Returns list of commit hashes sorted in chronological order.
+    """
+    code, out, _ = run_git(["notes", f"--ref={ref}", "list"], repo_root=repo_root)
+    if code != 0 or not out.strip():
+        return []
+    lines = [l.split() for l in out.strip().splitlines() if len(l.split()) == 2]
+    if not lines:
+        return []
+
+    blob_to_commit: Dict[str, str] = {}
+    for blob_sha, commit_sha in lines:
+        blob_to_commit[blob_sha] = commit_sha
+
+    input_data = "\n".join(blob_to_commit.keys()) + "\n"
+    code, batch_out, _ = run_git(["cat-file", "--batch"], input_text=input_data, repo_root=repo_root)
+    if code != 0 or not batch_out:
+        return []
+
+    matching_commits: List[str] = []
+    idx = 0
+    for blob_sha, commit_sha in lines:
+        header_end = batch_out.find("\n", idx)
+        if header_end == -1:
+            break
+        header = batch_out[idx:header_end]
+        parts = header.split()
+        if len(parts) >= 3 and parts[1] == "blob":
+            size = int(parts[2])
+            content_start = header_end + 1
+            content = batch_out[content_start:content_start + size]
+            idx = content_start + size + 1
+            if session_id in content:
+                matching_commits.append(commit_sha)
+            else:
+                notes = parse_notes(content)
+                for n in notes:
+                    matched = False
+                    for ad in REGISTRY.list_adapters():
+                        if hasattr(ad, "resolve_subagent_to_root"):
+                            root, _ = ad.resolve_subagent_to_root(n.session_id)
+                            if root == session_id:
+                                matching_commits.append(commit_sha)
+                                matched = True
+                                break
+                    if matched:
+                        break
+        else:
+            idx = header_end + 1
+
+    if not matching_commits:
+        return []
+
+    c_sort, sorted_out, _ = run_git(
+        ["rev-list", "--reverse", "--no-walk"] + matching_commits,
+        repo_root=repo_root,
+    )
+    if c_sort == 0 and sorted_out.strip():
+        return [c for c in sorted_out.strip().splitlines() if c]
+    return matching_commits
+
+
+def _get_target_commits_for_session_update(
+    session_id: str,
+    explicit_commit: Optional[str] = None,
+    ref: str = DEFAULT_NOTES_REF,
+    repo_root: Optional[Path] = None,
+) -> List[str]:
+    """
+    Determines commits to update for a session exclusion change.
+    If an explicit commit/range was provided, resolves that.
+    Otherwise, resolves all commits in the repository with notes from this session, plus HEAD.
+    """
+    if explicit_commit:
+        if ".." in explicit_commit:
+            code, out, _ = run_git(["rev-list", "--reverse", explicit_commit], repo_root=repo_root)
+            return [line.strip() for line in out.splitlines() if line.strip()] if code == 0 else []
+        return [explicit_commit]
+
+    commits = find_commits_with_session_note(session_id, ref=ref, repo_root=repo_root)
+    code, head_sha, _ = run_git(["rev-parse", "HEAD"], repo_root=repo_root)
+    head_sha = head_sha.strip() if code == 0 else ""
+    if head_sha and head_sha not in commits:
+        commits.append(head_sha)
+
+    if commits:
+        c_sort, sorted_out, _ = run_git(
+            ["rev-list", "--reverse", "--no-walk"] + commits,
+            repo_root=repo_root,
+        )
+        if c_sort == 0 and sorted_out.strip():
+            return [c for c in sorted_out.strip().splitlines() if c]
+    return commits
+
+
+def _update_session_commits_notes(
+    session_id: str,
+    target_commits: List[str],
+    ref: str = DEFAULT_NOTES_REF,
+    repo_root: Optional[Path] = None,
+) -> None:
+    """Updates prompt notes on target commits after session exclusion changes."""
+    if not target_commits:
+        return
+    updated: List[str] = []
+    for chash in target_commits:
+        rec_args = argparse.Namespace(
+            commit=chash,
+            session=session_id,
+            ref=ref,
+            exclude=None,
+            drop_last=0,
+            edit=False,
+            quiet=True,
+            dry_run=False,
+            _in_range=True,
+        )
+        ret = _record_single_commit(rec_args, repo_root=repo_root)
+        if ret == 0:
+            updated.append(chash)
+
+    if len(updated) == 1:
+        print(f"Updated prompt note on {updated[0][:8]}.")
+    elif len(updated) > 1:
+        print(f"Updated prompt notes on {len(updated)} commits ({', '.join(c[:8] for c in updated)}).")
+
+
 def cmd_session(args: argparse.Namespace) -> int:
     """Inspects and manages prompt exclusions for a specific agent session."""
     repo_root = get_repo_root()
@@ -4339,19 +4494,13 @@ def cmd_session(args: argparse.Namespace) -> int:
             print(f"Excluded prompts matching '{target}' from session {session_id[:8]}.")
 
         if not getattr(args, "no_update", False):
-            commit_target = getattr(args, "commit", "HEAD") or "HEAD"
-            rec_args = argparse.Namespace(
-                commit=commit_target,
-                session=session_id,
+            target_commits = _get_target_commits_for_session_update(
+                session_id=session_id,
+                explicit_commit=getattr(args, "commit", None),
                 ref=args.ref,
-                exclude=None,
-                drop_last=0,
-                edit=False,
-                quiet=True,
-                dry_run=False,
+                repo_root=repo_root,
             )
-            cmd_record(rec_args)
-            print(f"Updated prompt note on {commit_target}.")
+            _update_session_commits_notes(session_id, target_commits, ref=args.ref, repo_root=repo_root)
         return 0
 
     elif action in ("undrop", "restore"):
@@ -4382,19 +4531,13 @@ def cmd_session(args: argparse.Namespace) -> int:
             save_session_excludes(session_id, session_excludes, repo_root=repo_root)
             print(f"Restored prompt '{target}' in session {session_id[:8]}.")
             if not getattr(args, "no_update", False):
-                commit_target = getattr(args, "commit", "HEAD") or "HEAD"
-                rec_args = argparse.Namespace(
-                    commit=commit_target,
-                    session=session_id,
+                target_commits = _get_target_commits_for_session_update(
+                    session_id=session_id,
+                    explicit_commit=getattr(args, "commit", None),
                     ref=args.ref,
-                    exclude=None,
-                    drop_last=0,
-                    edit=False,
-                    quiet=True,
-                    dry_run=False,
+                    repo_root=repo_root,
                 )
-                cmd_record(rec_args)
-                print(f"Updated prompt note on {commit_target}.")
+                _update_session_commits_notes(session_id, target_commits, ref=args.ref, repo_root=repo_root)
         else:
             print(f"No active exclusion found for '{target}' in session {session_id[:8]}.")
         return 0
@@ -4404,19 +4547,13 @@ def cmd_session(args: argparse.Namespace) -> int:
         save_session_excludes(session_id, session_excludes, repo_root=repo_root)
         print(f"Cleared all exclusions for session {session_id[:8]}.")
         if not getattr(args, "no_update", False):
-            commit_target = getattr(args, "commit", "HEAD") or "HEAD"
-            rec_args = argparse.Namespace(
-                commit=commit_target,
-                session=session_id,
+            target_commits = _get_target_commits_for_session_update(
+                session_id=session_id,
+                explicit_commit=getattr(args, "commit", None),
                 ref=args.ref,
-                exclude=None,
-                drop_last=0,
-                edit=False,
-                quiet=True,
-                dry_run=False,
+                repo_root=repo_root,
             )
-            cmd_record(rec_args)
-            print(f"Updated prompt note on {commit_target}.")
+            _update_session_commits_notes(session_id, target_commits, ref=args.ref, repo_root=repo_root)
         return 0
 
     else:
@@ -4868,7 +5005,7 @@ def main():
     )
     p_session.add_argument("target", nargs="?", help="Prompt 1-based index (e.g. 2) or regex pattern (e.g. 'Commit')")
     p_session.add_argument("--session", "-s", help="Target session conversation UUID (default: active session)")
-    p_session.add_argument("--commit", "-c", default="HEAD", help="Commit to update note on (default: HEAD)")
+    p_session.add_argument("--commit", "-c", default=None, help="Commit or range to update note on (default: all commits in session trail)")
     p_session.add_argument("--no-update", action="store_true", help="Do not automatically re-record note on commit")
     p_session.add_argument(
         "--commits",

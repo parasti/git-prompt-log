@@ -233,7 +233,7 @@ git prompt-log session undrop 2
 git prompt-log session clear
 ```
 
-Session exclusions are persisted in `prompt-log-excludes.json` alongside the session data, and the prompt note on `HEAD` is automatically refreshed.
+Session exclusions are persisted in `prompt-log-excludes.json` alongside the session data, and prompt notes across all commits in the session trail are automatically refreshed (or a specific commit/range using `-c`).
 
 ### Manual Filtering & Editing
 

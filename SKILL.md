@@ -201,7 +201,7 @@ When asked how to inspect, exclude, or retract specific prompts:
   * `git prompt-log session`: List all prompts in the active session with 1-based index numbers.
   * `git prompt-log session --session <uuid>`: Target a specific session explicitly.
   * `git prompt-log session --commits [range]`: Interleave session prompts and branch commits into a unified chronological timeline to inspect note status and steering flow.
-  * `git prompt-log session drop <index_or_pattern>`: Mark prompt #N or matching pattern as excluded for this session (automatically updates HEAD's prompt note).
+  * `git prompt-log session drop <index_or_pattern>`: Mark prompt #N or matching pattern as excluded for this session (automatically updates prompt notes across all commits in the session trail; or a specific commit with `-c`).
   * `git prompt-log session undrop <index_or_pattern>`: Restore a previously excluded prompt.
   * `git prompt-log session clear`: Clear all exclusions for the session.
 * **Per-Commit Drops & Edits (Single Commit Only):**
