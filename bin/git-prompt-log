@@ -4245,21 +4245,22 @@ def find_commits_with_session_note(
             content_start = header_end + 1
             content = batch_out[content_start:content_start + size]
             idx = content_start + size + 1
-            if session_id in content:
+            notes = parse_notes(content)
+            matched = False
+            for n in notes:
+                if n.session_id == session_id:
+                    matched = True
+                    break
+                for ad in REGISTRY.list_adapters():
+                    if hasattr(ad, "resolve_subagent_to_root"):
+                        root, _ = ad.resolve_subagent_to_root(n.session_id)
+                        if root == session_id:
+                            matched = True
+                            break
+                if matched:
+                    break
+            if matched:
                 matching_commits.extend(commit_list)
-            else:
-                notes = parse_notes(content)
-                for n in notes:
-                    matched = False
-                    for ad in REGISTRY.list_adapters():
-                        if hasattr(ad, "resolve_subagent_to_root"):
-                            root, _ = ad.resolve_subagent_to_root(n.session_id)
-                            if root == session_id:
-                                matching_commits.extend(commit_list)
-                                matched = True
-                                break
-                    if matched:
-                        break
         else:
             idx = header_end + 1
 
@@ -4284,7 +4285,7 @@ def _get_target_commits_for_session_update(
     """
     Determines commits to update for a session exclusion change.
     If an explicit commit/range was provided, resolves that.
-    Otherwise, resolves all commits in the repository with notes from this session, plus HEAD.
+    Otherwise, resolves all commits in the repository with notes from this session.
     """
     if explicit_commit:
         if ".." in explicit_commit:
@@ -4292,20 +4293,7 @@ def _get_target_commits_for_session_update(
             return [line.strip() for line in out.splitlines() if line.strip()] if code == 0 else []
         return [explicit_commit]
 
-    commits = find_commits_with_session_note(session_id, ref=ref, repo_root=repo_root)
-    code, head_sha, _ = run_git(["rev-parse", "HEAD"], repo_root=repo_root)
-    head_sha = head_sha.strip() if code == 0 else ""
-    if head_sha and head_sha not in commits:
-        commits.append(head_sha)
-
-    if commits:
-        c_sort, sorted_out, _ = run_git(
-            ["rev-list", "--reverse", "--no-walk"] + commits,
-            repo_root=repo_root,
-        )
-        if c_sort == 0 and sorted_out.strip():
-            return [c for c in sorted_out.strip().splitlines() if c]
-    return commits
+    return find_commits_with_session_note(session_id, ref=ref, repo_root=repo_root)
 
 
 def _update_session_commits_notes(

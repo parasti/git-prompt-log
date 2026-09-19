@@ -4465,6 +4465,60 @@ class TestSessionDropTrailAndExportSafety(unittest.TestCase):
         self.assertNotIn(c4, found)
         self.assertNotIn(c5, found)
 
+    def test_find_commits_with_session_note_ignores_session_id_in_prompt_body(self):
+        """Regression: A commit mentioning another session ID inside its prompt text
+        must not be matched by find_commits_with_session_note."""
+        (self.repo_dir / "f_other.txt").write_text("other")
+        subprocess.run(["git", "add", "."], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: other session work"], cwd=self.repo_dir, check=True, capture_output=True)
+        c_other = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+
+        other_note = (
+            "Assistant-Session: unrelated-session-123\n"
+            "Assistant-Harness: Manual\n"
+            "Assistant-Model: Manual\n"
+            "Assistant-Recorded: 2026-09-18 06:00:00 UTC\n\n"
+            "Assistant-Prompts:\n"
+            f"  [2026-09-18 06:00:00 UTC] Debugging why session {self.session_id} failed\n"
+        )
+        gpn.write_note_content(c_other, other_note, repo_root=self.repo_dir)
+
+        found = gpn.find_commits_with_session_note(self.session_id, repo_root=self.repo_dir)
+        self.assertNotIn(c_other, found)
+
+    def test_session_drop_does_not_target_unrelated_head(self):
+        """Regression: session drop without -c should only update commits in that session's trail,
+        and must not append or corrupt HEAD if HEAD belongs to a different session."""
+        (self.repo_dir / "f_head.txt").write_text("head")
+        subprocess.run(["git", "add", "."], cwd=self.repo_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "feat: new head commit"], cwd=self.repo_dir, check=True, capture_output=True)
+        c_head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.repo_dir, text=True).strip()
+
+        unrelated_note = (
+            "Assistant-Session: unrelated-session-abc\n"
+            "Assistant-Harness: Manual\n"
+            "Assistant-Model: Manual\n"
+            "Assistant-Recorded: 2026-09-19 12:00:00 UTC\n\n"
+            "Assistant-Prompts:\n"
+            "  [2026-09-19 12:00:00 UTC] Work on unrelated feature\n"
+        )
+        gpn.write_note_content(c_head, unrelated_note, repo_root=self.repo_dir)
+
+        res = subprocess.run(
+            ["python3", self.script_path, "session", "drop", "2", "--session", self.session_id],
+            cwd=self.repo_dir,
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("Updated prompt notes on 3 commits", res.stdout)
+        self.assertNotIn(c_head[:8], res.stdout)
+
+        head_note = gpn.get_note_content(c_head, repo_root=self.repo_dir)
+        self.assertNotIn(self.session_id, head_note)
+        self.assertIn("unrelated-session-abc", head_note)
+
 
 if __name__ == "__main__":
     unittest.main()
