@@ -2583,6 +2583,47 @@ class TestIngestionAdapters(unittest.TestCase):
         # Synthetic prompt must NOT be in note
         self.assertNotIn("You are a subagent implementer", note)
 
+    def test_find_session_data_fallback_across_adapters_for_explicit_session_id(self):
+        """Regression: when an active adapter is detected but lacks the requested explicit session_id,
+        find_session_data must fall back to check other registered adapters."""
+        repo_dir = self.work_dir / "repo_fallback"
+        repo_dir.mkdir()
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_dir, check=True, capture_output=True)
+
+        claude_dir = repo_dir / ".claude"
+        claude_dir.mkdir()
+        t_file = claude_dir / "sess-claude-99.jsonl"
+        t_file.write_text(
+            json.dumps({"role": "user", "content": "Hello from Claude session", "timestamp": "2026-09-18T05:00:00Z"}) + "\n",
+            encoding="utf-8",
+        )
+
+        fake_env = {
+            "OPENCODE": "1",
+            "OPENCODE_SESSION_ID": "fake-opencode-session-uuid",
+        }
+        with mock.patch.dict(os.environ, fake_env):
+            active = gpn.REGISTRY.detect_active_adapter(repo_root=repo_dir)
+            self.assertIsNotNone(active)
+            self.assertEqual(active.name, "opencode")
+
+            adapter, data = gpn.REGISTRY.find_session_data(
+                session_id="sess-claude-99",
+                repo_root=repo_dir,
+            )
+            self.assertIsNotNone(adapter)
+            self.assertEqual(adapter.name, "claude")
+            self.assertIsNotNone(data)
+            self.assertEqual(data["session_id"], "sess-claude-99")
+            self.assertEqual(data["prompts"][0].text, "Hello from Claude session")
+
+            adapter_none, data_none = gpn.REGISTRY.find_session_data(
+                session_id=None,
+                repo_root=repo_dir,
+            )
+            self.assertIsNone(adapter_none)
+            self.assertIsNone(data_none)
+
     def test_harness_cli_and_git_config(self):
         repo_dir = self.work_dir / "repo_harness"
         repo_dir.mkdir()

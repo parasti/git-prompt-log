@@ -2496,9 +2496,12 @@ class AdapterRegistry:
             )
             if data:
                 return active, data
-            return None, None
+            if not session_id:
+                return None, None
 
         for name in self._order:
+            if active and name == active.name:
+                continue
             if name == "manual":
                 continue
             adapter = self._adapters[name]
