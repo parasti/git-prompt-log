@@ -394,19 +394,81 @@ def remove_note_content(commit_hash: str, ref: str = DEFAULT_NOTES_REF, repo_roo
     return code == 0
 
 
+DEFAULT_EXCLUDE_PATTERNS: List[str] = [
+    r"^[Yy]es\.?$",
+    r"^[Dd]o it\.?$",
+    r"^[Oo][Kk]\.?$",
+    r"^[Rr]esume\.?$",
+]
+
+
+def get_configured_exclude_patterns(repo_root: Optional[Path] = None) -> List[str]:
+    r"""
+    Retrieves regex patterns for excluded prompts.
+    Default exclusions ('^[Yy]es\.?$', '^[Dd]o it\.?$', '^[Oo][Kk]\.?$', '^[Rr]esume\.?$')
+    are enabled unless overridden via git config (prompt-log.exclude).
+    """
+    patterns: List[str] = []
+    has_config = False
+
+    code, out, _ = run_git(["config", "--get-all", "prompt-log.exclude"], repo_root=repo_root)
+    if code == 0:
+        has_config = True
+        if out:
+            for line in out.splitlines():
+                line = line.strip()
+                if line and line.lower() not in ("none", "false", '""', "''") and line not in patterns:
+                    patterns.append(line)
+
+    code_def, out_def, _ = run_git(["config", "--bool", "prompt-log.defaultExcludes"], repo_root=repo_root)
+    if code_def != 0:
+        code_def, out_def, _ = run_git(["config", "--bool", "prompt-log.default-excludes"], repo_root=repo_root)
+
+    explicit_defaults = None
+    if code_def == 0:
+        explicit_defaults = (out_def.strip() == "true")
+
+    if has_config:
+        if explicit_defaults is True:
+            for p in DEFAULT_EXCLUDE_PATTERNS:
+                if p not in patterns:
+                    patterns.append(p)
+        return patterns
+
+    if explicit_defaults is False:
+        return []
+
+    return list(DEFAULT_EXCLUDE_PATTERNS)
+
+
 def _safe_search(pattern: str, text: str) -> bool:
     """Safely executes regex search against text, handling inline flags and invalid patterns."""
-    if not pattern:
+    if not pattern or text is None:
         return False
+    target = text.strip()
     try:
         # Strip inline flags (e.g. (?i)) if misplaced because re.IGNORECASE is already supplied
         norm_pattern = re.sub(r"\(\?[aiLmsux]+\)", "", pattern)
-        return bool(re.search(norm_pattern, text, re.IGNORECASE))
+        return bool(re.search(norm_pattern, target, re.IGNORECASE))
     except re.error:
         try:
-            return bool(re.search(pattern, text, re.IGNORECASE))
+            return bool(re.search(pattern, target, re.IGNORECASE))
         except re.error:
             return False
+
+
+def is_ignored_prompt(
+    text: str,
+    custom_patterns: Optional[List[str]] = None,
+    repo_root: Optional[Path] = None,
+) -> bool:
+    """Returns True if text matches custom or configured exclusion patterns."""
+    patterns = custom_patterns if custom_patterns is not None else get_configured_exclude_patterns(repo_root=repo_root)
+    clean = text.strip()
+    for pat in patterns:
+        if _safe_search(pat, clean):
+            return True
+    return False
 
 
 # --- Transcript and Agent Discovery ---
@@ -688,14 +750,17 @@ def apply_session_excludes_filter(
     session_id: str,
     prompts: List[PromptEntry],
     repo_root: Optional[Path] = None,
+    custom_patterns: Optional[List[str]] = None,
 ) -> List[PromptEntry]:
-    """Filters prompts according to session-specific exclusions and patterns."""
+    """Filters prompts according to session-specific exclusions and configured/custom patterns."""
     session_excludes = load_session_excludes(session_id, repo_root=repo_root)
-    if not session_excludes:
-        return prompts
-    pat_list = list(session_excludes.get("patterns", []))
+    patterns = list(custom_patterns if custom_patterns is not None else get_configured_exclude_patterns(repo_root=repo_root))
+    pat_list = patterns + list(session_excludes.get("patterns", []))
     ts_list = set(session_excludes.get("timestamps", []))
     idx_set = set(session_excludes.get("indices", []))
+
+    if not session_excludes and not patterns:
+        return prompts
 
     filtered: List[PromptEntry] = []
     for i, p in enumerate(prompts, start=1):
@@ -1276,7 +1341,7 @@ class AntigravityAdapter(BaseIngestionAdapter):
         prompts = process_prompt_turns(raw_turns)
         cid = transcript_path.parent.parent.parent.name
         if apply_session_excludes:
-            prompts = apply_session_excludes_filter(cid, prompts, repo_root=repo_root)
+            prompts = apply_session_excludes_filter(cid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
 
         path_str = str(transcript_path).replace("\\", "/")
         is_vscode = (
@@ -1301,6 +1366,8 @@ class AntigravityAdapter(BaseIngestionAdapter):
         extra_options: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         repo = repo_root or get_repo_root()
+        if custom_patterns is None:
+            custom_patterns = get_configured_exclude_patterns(repo_root=repo)
         target_sid = session_id
 
         if not target_sid:
@@ -1574,7 +1641,7 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
 
         prompts = process_prompt_turns(raw_turns)
         if apply_session_excludes:
-            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root)
+            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
 
         harness, model = self.get_agent_identity(detected_model)
         return {
@@ -1594,6 +1661,8 @@ class ClaudeCodeAdapter(BaseIngestionAdapter):
         extra_options: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         repo = repo_root or get_repo_root()
+        if custom_patterns is None:
+            custom_patterns = get_configured_exclude_patterns(repo_root=repo)
 
         env_transcript = os.environ.get("CLAUDE_TRANSCRIPT_PATH")
         if env_transcript and Path(env_transcript).exists():
@@ -2010,7 +2079,7 @@ class OpencodeAdapter(BaseIngestionAdapter):
 
         prompts = process_prompt_turns(raw_turns)
         if apply_session_excludes:
-            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root)
+            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
 
         harness, def_model = self.get_agent_identity(detected_model)
         if ver:
@@ -2136,7 +2205,7 @@ class OpencodeAdapter(BaseIngestionAdapter):
 
         prompts = process_prompt_turns(raw_turns)
         if apply_session_excludes:
-            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root)
+            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
 
         harness, def_model = self.get_agent_identity(detected_model)
         if ver:
@@ -2159,6 +2228,8 @@ class OpencodeAdapter(BaseIngestionAdapter):
         extra_options: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         repo = repo_root or get_repo_root()
+        if custom_patterns is None:
+            custom_patterns = get_configured_exclude_patterns(repo_root=repo)
 
         env_transcript = os.environ.get("OPENCODE_TRANSCRIPT_PATH")
         if env_transcript and Path(env_transcript).exists():
@@ -2366,6 +2437,10 @@ class ManualAdapter(BaseIngestionAdapter):
         if not msg:
             return None
 
+        repo = repo_root or get_repo_root()
+        if custom_patterns is None:
+            custom_patterns = get_configured_exclude_patterns(repo_root=repo)
+
         now_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         prompts = process_prompt_turns([(now_utc, msg.strip())])
         if not prompts:
@@ -2373,7 +2448,10 @@ class ManualAdapter(BaseIngestionAdapter):
 
         sid = session_id or f"manual-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
         if apply_session_excludes:
-            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root)
+            prompts = apply_session_excludes_filter(sid, prompts, repo_root=repo_root, custom_patterns=custom_patterns)
+
+        if not prompts:
+            return None
 
         return {
             "session_id": sid,
@@ -2758,9 +2836,11 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
     _, date_out, _ = run_git(["show", "-s", f"--format={date_fmt}", commit_hash], repo_root=repo_root)
     commit_date_utc = format_utc(date_out)
 
-    exclude_patterns: List[str] = []
+    configured_excludes = get_configured_exclude_patterns(repo_root=repo_root)
+    exclude_patterns: List[str] = list(configured_excludes)
     if getattr(args, "exclude", None):
-        exclude_patterns.append(args.exclude)
+        if args.exclude not in exclude_patterns:
+            exclude_patterns.append(args.exclude)
 
     message_input = getattr(args, "message", None)
     if getattr(args, "stdin", False):
@@ -2788,6 +2868,7 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
         adapter_name=adapter_name,
         session_id=args.session,
         repo_root=repo_root,
+        custom_patterns=exclude_patterns,
         extra_options=extra_options,
     )
 
@@ -2797,7 +2878,7 @@ def _record_single_commit(args: argparse.Namespace, repo_root: Optional[Path] = 
     existing_notes = parse_notes(existing_raw)
 
     if not session_data:
-        if existing_notes and (exclude_patterns or getattr(args, "drop_last", 0) or getattr(args, "keep_last", None) is not None):
+        if existing_notes and (getattr(args, "exclude", None) or getattr(args, "drop_last", 0) or getattr(args, "keep_last", None) is not None):
             # Retroactively drop or prune existing note without needing an active session transcript
             all_notes = existing_notes
             session_id = existing_notes[-1].session_id
@@ -4159,6 +4240,7 @@ def _show_session_timeline_with_commits(
                 })
 
     pat_list = session_excludes.get("patterns", [])
+    configured_excludes = get_configured_exclude_patterns(repo_root=repo_root)
     ts_list = set(session_excludes.get("timestamps", []))
     idx_set = set(session_excludes.get("indices", []))
 
@@ -4168,6 +4250,7 @@ def _show_session_timeline_with_commits(
             i in idx_set
             or p.timestamp in ts_list
             or any(_safe_search(pat, p.text) for pat in pat_list)
+            or any(_safe_search(pat, p.text) for pat in configured_excludes)
         )
         items.append({
             "type": "prompt",
@@ -4465,12 +4548,14 @@ def cmd_session(args: argparse.Namespace) -> int:
                 ref=getattr(args, "ref", DEFAULT_NOTES_REF),
             )
 
+        configured_excludes = get_configured_exclude_patterns(repo_root=repo_root)
         print(f"Session: {session_id} ({len(all_prompts)} prompts)")
         for i, p in enumerate(all_prompts, start=1):
             is_excluded = (
                 i in idx_set
                 or p.timestamp in ts_list
                 or any(_safe_search(pat, p.text) for pat in pat_list)
+                or any(_safe_search(pat, p.text) for pat in configured_excludes)
             )
             status = " [EXCLUDED]" if is_excluded else ""
             first_line = p.text.splitlines()[0] if p.text else ""
@@ -4711,7 +4796,7 @@ def cmd_deinit(args: argparse.Namespace) -> int:
     if getattr(args, "all", False) or getattr(args, "with_config", False):
         for key in ("notes.rewrite.rebase", "notes.rewrite.amend", "notes.rewriteRef"):
             run_git(["config", "--unset", key], repo_root=repo_root)
-        for key in ("prompt-log.exclude", "prompt-note.exclude", "prompt-log.harness"):
+        for key in ("prompt-log.harness",):
             run_git(["config", "--unset-all", key], repo_root=repo_root)
         print("Cleaned local git config (notes.rewrite*, prompt-log.harness)")
 

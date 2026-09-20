@@ -204,6 +204,11 @@ When asked how to inspect, exclude, or retract specific prompts:
   * `git prompt-log session drop <index_or_pattern>`: Mark prompt #N or matching pattern as excluded for this session (automatically updates prompt notes across all commits in the session trail; or a specific commit with `-c`).
   * `git prompt-log session undrop <index_or_pattern>`: Restore a previously excluded prompt.
   * `git prompt-log session clear`: Clear all exclusions for the session.
+* **Configurable Exclusions (Always-Skip Patterns via Git Config):**
+  * Built-in default exclusions automatically skip routine prompts: `'^[Yy]es\.?$'`, `'^[Dd]o it\.?$'`, `'^[Oo][Kk]\.?$'`, `'^[Rr]esume\.?$'`.
+  * `git config --add prompt-log.exclude "<regex>"`: Permanently skip routine patterns across all recordings (overrides default patterns).
+  * `git config prompt-log.defaultExcludes true`: Retain defaults alongside custom patterns.
+  * `git config prompt-log.exclude ""` or `git config prompt-log.defaultExcludes false`: Disable all exclusions.
 * **Per-Commit Drops & Edits (Single Commit Only):**
   * `git prompt-log record --drop "<pattern>"`: Exclude matching prompts for this commit note only.
   * `git prompt-log edit HEAD`: Edit a recorded note interactively in `$EDITOR`.

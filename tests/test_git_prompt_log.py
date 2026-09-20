@@ -967,6 +967,100 @@ class TestPromptExclusionAndRetraction(unittest.TestCase):
         prompts = [p.text for p in data["prompts"]]
         self.assertEqual(prompts, ["Ignore previous compiler warnings and proceed with build"])
 
+    def test_default_exclusion_patterns_matching(self):
+        patterns = gpn.DEFAULT_EXCLUDE_PATTERNS
+        self.assertEqual(
+            patterns,
+            [r"^[Yy]es\.?$", r"^[Dd]o it\.?$", r"^[Oo][Kk]\.?$", r"^[Rr]esume\.?$"],
+        )
+
+        positive_cases = [
+            "Yes", "yes", "Yes.", "yes.",
+            "Do it", "do it", "Do it.", "do it.",
+            "OK", "ok", "Ok", "OK.", "ok.", "Ok.",
+            "Resume", "resume", "Resume.", "resume.",
+            "  Yes  ", "  do it.  ", " OK\n", "resume.\n",
+        ]
+        for text in positive_cases:
+            with self.subTest(text=text):
+                self.assertTrue(
+                    any(gpn._safe_search(pat, text) for pat in patterns),
+                    f"Expected '{text}' to match default exclude patterns",
+                )
+
+        negative_cases = [
+            "Yesterday", "Yes please", "eyes",
+            "Do it now", "Don't do it", "redo it",
+            "token", "book", "OK then", "Ok sure",
+            "consumer", "Resume work", "presume",
+            "Fix commit bug", "Implement user auth",
+        ]
+        for text in negative_cases:
+            with self.subTest(text=text):
+                self.assertFalse(
+                    any(gpn._safe_search(pat, text) for pat in patterns),
+                    f"Expected '{text}' to NOT match default exclude patterns",
+                )
+
+    def test_get_configured_exclude_patterns_defaults_and_overrides(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+
+            # 1. Clean repo: returns default exclusion patterns
+            patterns = gpn.get_configured_exclude_patterns(repo_root=repo)
+            self.assertEqual(patterns, gpn.DEFAULT_EXCLUDE_PATTERNS)
+
+            # 2. Configured pattern: overrides defaults completely
+            subprocess.run(["git", "config", "--add", "prompt-log.exclude", r"^(?i)commit$"], cwd=repo, check=True)
+            patterns = gpn.get_configured_exclude_patterns(repo_root=repo)
+            self.assertEqual(patterns, [r"^(?i)commit$"])
+
+            # 3. Multiple configured patterns
+            subprocess.run(["git", "config", "--add", "prompt-log.exclude", r"^wip$"], cwd=repo, check=True)
+            patterns = gpn.get_configured_exclude_patterns(repo_root=repo)
+            self.assertEqual(patterns, [r"^(?i)commit$", r"^wip$"])
+
+            # 4. prompt-log.defaultExcludes true: retains defaults alongside custom patterns
+            subprocess.run(["git", "config", "prompt-log.defaultExcludes", "true"], cwd=repo, check=True)
+            patterns = gpn.get_configured_exclude_patterns(repo_root=repo)
+            self.assertEqual(patterns, [r"^(?i)commit$", r"^wip$"] + gpn.DEFAULT_EXCLUDE_PATTERNS)
+
+            # 5. Clear prompt-log.exclude and disable defaults via prompt-log.defaultExcludes false
+            subprocess.run(["git", "config", "--unset-all", "prompt-log.exclude"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "prompt-log.defaultExcludes", "false"], cwd=repo, check=True)
+            patterns = gpn.get_configured_exclude_patterns(repo_root=repo)
+            self.assertEqual(patterns, [])
+
+            # 6. Override via empty string prompt-log.exclude ""
+            subprocess.run(["git", "config", "--unset", "prompt-log.defaultExcludes"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "prompt-log.exclude", ""], cwd=repo, check=True)
+            patterns = gpn.get_configured_exclude_patterns(repo_root=repo)
+            self.assertEqual(patterns, [])
+
+            # 7. Legacy prompt-note.exclude is NOT supported
+            subprocess.run(["git", "config", "--unset", "prompt-log.exclude"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "prompt-note.exclude", r"^legacy$"], cwd=repo, check=True)
+            patterns = gpn.get_configured_exclude_patterns(repo_root=repo)
+            self.assertEqual(patterns, gpn.DEFAULT_EXCLUDE_PATTERNS)
+
+    def test_is_ignored_prompt(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+
+            # Uses default patterns
+            self.assertTrue(gpn.is_ignored_prompt("Yes", repo_root=repo))
+            self.assertTrue(gpn.is_ignored_prompt("do it.", repo_root=repo))
+            self.assertTrue(gpn.is_ignored_prompt("OK", repo_root=repo))
+            self.assertTrue(gpn.is_ignored_prompt("Resume.", repo_root=repo))
+            self.assertFalse(gpn.is_ignored_prompt("Implement new parser", repo_root=repo))
+
+            # Custom patterns explicitly passed
+            self.assertTrue(gpn.is_ignored_prompt("Commit", custom_patterns=[r"^(?i)commit$"]))
+            self.assertFalse(gpn.is_ignored_prompt("Fix commit bug", custom_patterns=[r"^(?i)commit$"]))
+
+
 
 
 class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
@@ -1353,6 +1447,72 @@ class TestWorkflowAndAttributionLifecycle(unittest.TestCase):
         notes1_updated = gpn.parse_notes(raw1_updated)
         prompts1_updated = [p.text for p in notes1_updated[0].prompts]
         self.assertEqual(prompts1_updated, ["Implement user authentication"])
+
+    def test_always_skip_default_and_configured_exclude_patterns(self):
+        # 1. Author commit with feature prompt followed by all default routine prompts
+        self._append_prompt("Implement user authentication", "2026-09-04T10:00:00Z")
+        self._append_prompt("Yes.", "2026-09-04T10:01:00Z")
+        self._append_prompt("Do it.", "2026-09-04T10:02:00Z")
+        self._append_prompt("ok.", "2026-09-04T10:03:00Z")
+        self._append_prompt("Resume", "2026-09-04T10:04:00Z")
+        sha1 = self._commit("auth.py", "def login(): pass", "feat: Add login")
+
+        # 2. Post-commit hook recorded note: verify routine prompts were automatically skipped by default
+        raw1 = gpn.get_note_content(sha1, repo_root=self.repo_dir)
+        self.assertIsNotNone(raw1)
+        notes1 = gpn.parse_notes(raw1)
+        self.assertEqual(len(notes1), 1)
+        prompts1 = [p.text for p in notes1[0].prompts]
+        self.assertEqual(prompts1, ["Implement user authentication"])
+
+        # Verify session command marks default-excluded prompts with [EXCLUDED]
+        session_out1 = subprocess.check_output(
+            ["python3", str(Path(gpn.__file__).resolve()), "session"],
+            cwd=self.repo_dir,
+            text=True,
+            env=self.env,
+        )
+        self.assertIn("Yes.", session_out1)
+        self.assertIn("[EXCLUDED]", session_out1)
+
+        # 3. Configure git exclude pattern: overrides defaults completely
+        subprocess.run(["git", "config", "--add", "prompt-log.exclude", r"^(?i)commit$"], cwd=self.repo_dir, check=True)
+        patterns = gpn.get_configured_exclude_patterns(self.repo_dir)
+        self.assertEqual(patterns, [r"^(?i)commit$"])
+
+        # 4. Append prompt matching custom pattern ("Commit") and a prompt that was in defaults ("Yes.")
+        self._append_prompt("Add unit tests for auth", "2026-09-04T10:05:00Z")
+        self._append_prompt("Yes.", "2026-09-04T10:06:00Z")
+        self._append_prompt("Commit", "2026-09-04T10:07:00Z")
+        sha2 = self._commit("test_auth.py", "def test_login(): pass", "test: Add auth tests")
+
+        raw2 = gpn.get_note_content(sha2, repo_root=self.repo_dir)
+        self.assertIsNotNone(raw2)
+        notes2 = gpn.parse_notes(raw2)
+        prompts2 = [p.text for p in notes2[0].prompts]
+        # Cumulative history has "Add unit tests for auth", "Yes." (defaults overridden), and "Implement user authentication"
+        # "Commit" is skipped because it matches prompt-log.exclude
+        self.assertIn("Yes.", prompts2)
+        self.assertIn("Add unit tests for auth", prompts2)
+        self.assertIn("Implement user authentication", prompts2)
+        self.assertNotIn("Commit", prompts2)
+
+        # 5. Check git prompt-log session shows [EXCLUDED] for "Commit"
+        session_out = subprocess.check_output(
+            ["python3", str(Path(gpn.__file__).resolve()), "session"],
+            cwd=self.repo_dir,
+            text=True,
+            env=self.env,
+        )
+        self.assertIn("Commit", session_out)
+        self.assertIn("[EXCLUDED]", session_out)
+
+        # 6. Test uninstall --all does NOT clean user config prompt-log.exclude
+        uninstall_cmd = ["python3", str(Path(gpn.__file__).resolve()), "uninstall", "--all"]
+        subprocess.run(uninstall_cmd, cwd=self.repo_dir, check=True)
+        patterns_after = gpn.get_configured_exclude_patterns(self.repo_dir)
+        self.assertEqual(patterns_after, [r"^(?i)commit$"])
+
 
 
     def test_session_drop_and_undrop_cli(self):

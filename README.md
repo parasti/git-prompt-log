@@ -235,6 +235,34 @@ git prompt-log session clear
 
 Session exclusions are persisted in `prompt-log-excludes.json` alongside the session data, and prompt notes across all commits in the session trail are automatically refreshed (or a specific commit/range using `-c`).
 
+### Always-Skip Patterns (Git Config)
+
+By default, `git-prompt-log` automatically skips routine recurring steering and acknowledgment prompts:
+- `^[Yy]es\.?$`
+- `^[Dd]o it\.?$`
+- `^[Oo][Kk]\.?$`
+- `^[Rr]esume\.?$`
+
+To permanently and automatically skip additional recurring prompts across all recordings without needing manual session drop commands, configure one or more `prompt-log.exclude` regex patterns:
+
+```bash
+# Add an exclusion pattern for the current repository (replaces default patterns)
+git config --add prompt-log.exclude "^(?i)commit$"
+
+# Or configure globally across all repositories
+git config --global --add prompt-log.exclude "^(?i)commit$"
+
+# Retain default patterns alongside custom patterns
+git config prompt-log.defaultExcludes true
+
+# Disable all exclusions (record every prompt)
+git config prompt-log.exclude ""
+# or:
+git config prompt-log.defaultExcludes false
+```
+
+Configuring `prompt-log.exclude` overrides and replaces the default patterns unless `prompt-log.defaultExcludes` is explicitly set to `true`. Any prompt matching an active pattern will be automatically omitted by the post-commit hook and `git prompt-log record`.
+
 ### Manual Filtering & Editing
 
 Prompts can also be filtered or modified retroactively via the CLI:
