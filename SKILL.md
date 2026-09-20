@@ -20,15 +20,68 @@ When answering questions about the tool, use this technical foundation:
 * **Purpose:** `git-prompt-log` records human steering prompts and agent session metadata directly onto Git commits via Git notes (`refs/notes/commits`).
 * **Automatic Recording:** During `git prompt-log init`, a `.git/hooks/post-commit` hook is installed. When an agent creates or amends a commit, this hook automatically detects the active session and records the prompt note on `HEAD`. For human commits, the hook is strictly a no-op.
 * **Rebase & Squash Reconciliation:** A `.git/hooks/post-rewrite` hook is installed. When Git rewrites commits (`rebase`, `squash`, `fixup`, `commit --amend`), the hook automatically merges, deduplicates, and preserves prompt notes on the resulting commits.
+* **Worktrees:** In Git worktrees, hooks and notes are shared with the main repository automatically. You do not need to reinitialize or inspect `.git/hooks`.
 * **Note Format:** Notes store session headers (`Assistant-Session`, `Assistant-Harness`, `Assistant-Model`, `Assistant-Recorded`) followed by `Assistant-Prompts:` listed in reverse chronological order (causal prompt first; tool-mediated user inputs are prefixed with `[tool:<name>]`). Squashed commits across different sessions separate each session with `---`.
-* **Streaming Log Wrapper & Shorthand:** `git prompt-log` (shorthand for `git prompt-log log`) acts as a streaming wrapper around `git log`, rendering commits with formatted prompt blocks and unprompted commit placeholders (`Prompt: none recorded`). Arbitrary native `git log` options (`-n`, `-p`, `--stat`, `--graph`, revision ranges) are forwarded directly to Git, custom prompt options are namespaced (`--prompt-full`, `--prompt-ref`), and Git's native pager environment is respected.
+* **Streaming Log Wrapper & Shorthand:** `git prompt-log` (shorthand for `git prompt-log log`) acts as a streaming wrapper around `git log`, rendering commits with formatted prompt blocks and unprompted commit placeholders (`Prompt: none recorded`). Arbitrary native `git log` options (`-n`, `-p`, `--stat`, `--graph`, revision ranges) are forwarded directly to Git, custom prompt options are namespaced (`--prompt-full`, `--prompt-ref`), and Git's native pager environment is respected (automatically bypassed in non-interactive agent shells).
 * **Sharing Prompt Notes:** Notes are never pushed directly via git notes refs (`refs/notes/*`). Prompt notes are shared across repositories exclusively via markdown logs (`export` on the branch, and `import` upon landing).
 
 ---
 
 ## 2. Executing Tasks on Request
 
-When the user asks you to perform operations with `git-prompt-log`, execute the appropriate commands decisively. When asked to export prompt logs, proactively synthesize a concise, descriptive snake_case slug from your context of the work and pass it directly with `--slug` and `--commit` without hesitating or prompting the human.
+### Export Prompt Notes for Pull Requests (Zero-Inspection 1-Command Flow)
+
+When asked to export and commit a prompt log on a feature branch:
+
+1. **Synthesize `--slug` from your conversation context:**
+   As the AI assistant, you have complete context of what code, feature, or bug was worked on in this session. Formulate a concise, descriptive `snake_case` slug directly from memory (e.g., `user_authentication`, `camera_rotation_fix`, `configurable_exclusions`).
+   * **Do NOT run `git branch`, `git status`, or `git log` to inspect branch names or commit messages for naming.** Formulate the slug directly from context.
+   * **Do NOT ask the human to name the slug.** Naming is hard for humans; you are best positioned to summarize the work you just performed.
+
+2. **Execute immediately in a single terminal command:**
+   ```bash
+   git prompt-log export --commit --slug "<context_derived_slug>"
+   ```
+
+3. **Invariants (Do NOT waste turns probing):**
+   * **Do NOT run `git status` or `git branch` beforehand:** The feature branch revision range (`@{u}..HEAD`, `origin/main..HEAD`, or `origin/master..HEAD`) is detected automatically by the tool.
+   * **Do NOT inspect `git notes` or run `git prompt-log show`:** Commits created by the assistant automatically have prompt notes attached via the post-commit hook. The tool automatically validates notes.
+   * **Do NOT run `export --help` or `--stdout`:** `--commit` is safe, atomic, and idempotent. It creates `prompts/` automatically if missing, stages *only* the new markdown log, and leaves all other working tree files untouched.
+   * **Do NOT run `git log` or `git status` afterwards:** `export --commit` outputs explicit confirmation upon completion (`Committed prompt log: '...'`).
+   * Report completion immediately after this single command succeeds.
+
+---
+
+### Two-Step Workflow: "Commit and Export Prompt Log"
+
+When the user asks to "commit work and export prompt log" or "generate prompt log for session":
+1. **Step 1: Commit code changes normally**
+   ```bash
+   git add <modified-files>
+   git commit -m "<descriptive message>"
+   ```
+   *(The post-commit hook automatically records session prompt notes onto this commit).*
+2. **Step 2: Export the prompt log**
+   ```bash
+   git prompt-log export --commit --slug "<context_derived_slug>"
+   ```
+   *(Creates `prompts/YYYY_MM_DD_HHMMSS_<slug>.md` and commits it).*
+   **Do NOT** attempt to stage code changes together with the prompt log export; they are always two separate commits.
+
+---
+
+### Exporting on `main` or Custom Commit Ranges
+
+If working directly on `main` (or exporting a specific past commit range instead of a feature branch):
+```bash
+# Export commits from current session on main (where HEAD~N is the session start):
+git prompt-log export --range <start_commit>~1..HEAD --commit --slug "<context_derived_slug>"
+
+# Single commit export:
+git prompt-log export --range HEAD~1..HEAD --commit --slug "<context_derived_slug>"
+```
+
+---
 
 ### Enable Prompt Notes in a Repository
 When asked to initialize or enable prompt notes:
@@ -38,6 +91,8 @@ git prompt-log init
 *Options to mention or use if requested:*
 * `--no-post-commit`: Skips installing the automatic post-commit hook.
 * `-H, --harness <name>`: Explicitly configure default assistant harness (`antigravity`, `claude`, `opencode`, `manual`).
+
+---
 
 ### Inspect Notes & Commit Log History
 When asked to view or check prompt notes or commit history:
@@ -51,7 +106,7 @@ git prompt-log -n 2 -p
 git prompt-log --stat
 git prompt-log --graph main..HEAD
 
-# View full cumulative prompts per commit (instead of just the last 4 prompts)
+# View full cumulative prompts per commit (instead of default last 4 prompts)
 git prompt-log --prompt-full
 # or:
 git prompt-log log --prompt-full
@@ -76,26 +131,7 @@ git prompt-log timeline main..HEAD
 git log -n 1
 ```
 
-### Export Prompt Notes for Pull Requests
-When asked to prepare a branch for review, export notes, export prompt logs, or package prompts for a PR:
-
-1. **Build a Descriptive Slug Autonomously:**
-   * Do **not** pause, ask the human for a slug, or fall back to generic defaults.
-   * As the coding agent, you have full context of the work performed. Synthesize a concise, descriptive `snake_case` slug representing the feature, fix, or topic of the session/branch (e.g. `session_discovery_and_safe_record`, `note_deletion_and_filtering`, `claude_compatibility`).
-
-2. **Execute Export with `--commit` and `--slug`:**
-   ```bash
-   # Standard branch export against upstream base:
-   git prompt-log export --commit --slug "<descriptive_slug>"
-
-   # Explicit range (e.g. past sessions or specific commit range):
-   git prompt-log export --range "<range>" --commit --slug "<descriptive_slug>"
-   ```
-   * The `--commit` flag automatically stages `prompts/YYYY_MM_DD_HHMMSS_<slug>.md` and creates a Git commit with the subject `prompts: Export prompt log for <slug with spaces>`.
-   * Do not run a separate `git commit` or stage files manually after using `--commit`.
-
-3. **Prerequisite Check (Missing Notes):**
-   * If commits in the target range lack prompt notes (e.g. human commits or commits made before hooks were active), run `git prompt-log record <range>` to attach prompt notes to the commits first before exporting.
+---
 
 ### Upstream Re-hydration (After Merge)
 When asked to land, import, or re-hydrate notes on `main` after a PR merge:
@@ -113,7 +149,10 @@ git prompt-log import --dry-run prompts/*.md
 git prompt-log import --stdin < prompts/log.md
 cat prompts/log.md | git prompt-log import -
 ```
-This matches landed commits by commit hash or commit subject and attaches the prompt provenance back to `refs/notes/commits`. Note: directory paths are rejected; pass files directly (e.g. `prompts/*.md`). Zero arguments will do nothing and require specifying files or stdin.
+This matches landed commits by commit hash or commit subject and attaches the prompt provenance back to `refs/notes/commits`.
+**Note:** Directory paths are rejected; pass files directly (e.g. `prompts/*.md`). Zero arguments will do nothing and require specifying files or stdin.
+
+---
 
 ### Manual Recording & Filtering
 If the user asks to record prompts manually (e.g. after committing changes themselves rather than having the assistant commit) or filter out specific turns:
@@ -172,6 +211,8 @@ git prompt-log record -m "System architecture design" --harness "Human Dev" --mo
 
 Dropping prompts via `record --drop` or `--drop-last` only affects that specific commit's note. Because the session transcript remains untouched, omitted prompts will return on subsequent commits from the same session unless excluded with `git prompt-log session drop`.
 
+---
+
 ### Supported Harnesses
 `git-prompt-log` supports multiple assistant harnesses (`antigravity`, `claude`, `opencode`, `manual`):
 ```bash
@@ -188,11 +229,15 @@ git prompt-log harness --json
 git prompt-log record --harness claude -c HEAD
 ```
 
+---
+
 ### Interactive Note Editing
 When asked to edit or modify a recorded note directly:
 ```bash
 git prompt-log edit HEAD
 ```
+
+---
 
 ### Session Prompt Management (Exclusions & Retraction)
 When asked how to inspect, exclude, or retract specific prompts:
@@ -214,10 +259,14 @@ When asked how to inspect, exclude, or retract specific prompts:
   * `git prompt-log edit HEAD`: Edit a recorded note interactively in `$EDITOR`.
   Modifying notes per-commit does not alter the underlying session transcript; omitted prompts will return on subsequent commits made in the same session unless excluded with `git prompt-log session drop`.
 
+---
+
 ### Sharing Notes (Export & Import Only)
 Prompt notes must never be pushed directly via `refs/notes/*`. Prompt notes are shared across remotes exclusively via markdown logs:
-1. Export on branch before PR: `git prompt-log export --commit --slug "<descriptive_slug>"`
+1. Export on branch before PR: `git prompt-log export --commit --slug "<context_derived_slug>"`
 2. Land and re-hydrate on target branch: `git prompt-log import <path>`
+
+---
 
 ### Deinitialize or Uninstall
 When asked to remove `git-prompt-log` from a repository:
