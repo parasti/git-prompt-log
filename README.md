@@ -263,6 +263,42 @@ git config prompt-log.defaultExcludes false
 
 Configuring `prompt-log.exclude` overrides and replaces the default patterns unless `prompt-log.defaultExcludes` is explicitly set to `true`. Any prompt matching an active pattern will be automatically omitted by the post-commit hook and `git prompt-log record`.
 
+### Auto-Redaction & Content Sanitization (Git Config)
+
+To automatically replace sensitive strings, personal directory paths, internal hostnames, or credentials with placeholders (e.g. replacing `/Users/username` with `~` or masking API keys) across notes and exports, configure one or more `prompt-log.redact` rules:
+
+```bash
+# Replace personal home directory paths with ~ (current repo or globally)
+git config --add prompt-log.redact "/Users/username => ~"
+git config --global --add prompt-log.redact "/Users/username => ~"
+
+# Replace Linux home directory paths
+git config --global --add prompt-log.redact "/home/[^/]+ => ~"
+
+# Mask credentials or tokens (pattern => replacement)
+git config --add prompt-log.redact "ghp_[a-zA-Z0-9]{36} => [GITHUB_TOKEN]"
+git config --add prompt-log.redact "internal-host\.corp\.net => [INTERNAL_HOST]"
+
+# If replacement is omitted, it defaults to [REDACTED]
+git config --add prompt-log.redact "sk-[a-zA-Z0-9]+"
+
+# Clear all configured redactions
+git config prompt-log.redact ""
+```
+
+Rules support `<pattern> => <replacement>` (or `<pattern> -> <replacement>`), evaluated as regular expressions with automatic fallback to literal string replacement if invalid regex syntax is encountered.
+
+Configured redactions are applied automatically when recording prompt notes (sanitizing notes on disk), when displaying notes in `git prompt-log` / `git prompt-log show`, when inspecting prompts in `git prompt-log session`, and when exporting via `git prompt-log export`.
+
+Ad-hoc redactions can also be passed via the CLI:
+```bash
+# Redact on record
+git prompt-log record -m "Query on internal-host.corp.net" --redact "internal-host.corp.net => [INTERNAL_HOST]"
+
+# Redact during export
+git prompt-log export --stdout --redact "/Users/username => ~"
+```
+
 ### Manual Filtering & Editing
 
 Prompts can also be filtered or modified retroactively via the CLI:

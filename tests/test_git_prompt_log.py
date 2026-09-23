@@ -1061,6 +1061,231 @@ class TestPromptExclusionAndRetraction(unittest.TestCase):
             self.assertFalse(gpn.is_ignored_prompt("Fix commit bug", custom_patterns=[r"^(?i)commit$"]))
 
 
+class TestConfiguredRedactions(unittest.TestCase):
+    def test_parse_redaction_rule(self):
+        # Empty or null
+        self.assertIsNone(gpn.parse_redaction_rule(""))
+        self.assertIsNone(gpn.parse_redaction_rule("   "))
+        self.assertIsNone(gpn.parse_redaction_rule("none"))
+        self.assertIsNone(gpn.parse_redaction_rule("false"))
+
+        # Arrow delimiters => and ->
+        r1 = gpn.parse_redaction_rule("/Users/user => ~")
+        self.assertIsNotNone(r1)
+        self.assertEqual(r1.pattern, "/Users/user")
+        self.assertEqual(r1.replacement, "~")
+
+        r2 = gpn.parse_redaction_rule("/Users/user->~")
+        self.assertIsNotNone(r2)
+        self.assertEqual(r2.pattern, "/Users/user")
+        self.assertEqual(r2.replacement, "~")
+
+        # Empty replacement
+        r3 = gpn.parse_redaction_rule("prefix_ => ")
+        self.assertIsNotNone(r3)
+        self.assertEqual(r3.pattern, "prefix_")
+        self.assertEqual(r3.replacement, "")
+
+        # Default replacement [REDACTED]
+        r4 = gpn.parse_redaction_rule("sk-[a-zA-Z0-9]+")
+        self.assertIsNotNone(r4)
+        self.assertEqual(r4.pattern, "sk-[a-zA-Z0-9]+")
+        self.assertEqual(r4.replacement, "[REDACTED]")
+
+    def test_get_configured_redact_rules(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+
+            # 1. Clean repo: returns empty list
+            rules = gpn.get_configured_redact_rules(repo_root=repo)
+            self.assertEqual(rules, [])
+
+            # 2. Add rule via git config
+            subprocess.run(["git", "config", "--add", "prompt-log.redact", "/Users/user => ~"], cwd=repo, check=True)
+            rules = gpn.get_configured_redact_rules(repo_root=repo)
+            self.assertEqual(len(rules), 1)
+            self.assertEqual(rules[0].pattern, "/Users/user")
+            self.assertEqual(rules[0].replacement, "~")
+
+            # 3. Add second rule
+            subprocess.run(["git", "config", "--add", "prompt-log.redact", r"secret_\d+ => [SECRET]"], cwd=repo, check=True)
+            rules = gpn.get_configured_redact_rules(repo_root=repo)
+            self.assertEqual(len(rules), 2)
+            self.assertEqual(rules[1].pattern, r"secret_\d+")
+            self.assertEqual(rules[1].replacement, "[SECRET]")
+
+            # 4. Clear rules via empty string
+            subprocess.run(["git", "config", "--unset-all", "prompt-log.redact"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "prompt-log.redact", ""], cwd=repo, check=True)
+            rules = gpn.get_configured_redact_rules(repo_root=repo)
+            self.assertEqual(rules, [])
+
+    def test_apply_redactions(self):
+        # Empty or untouched
+        self.assertEqual(gpn.apply_redactions("hello world", rules=[]), "hello world")
+        self.assertEqual(gpn.apply_redactions("", rules=[]), "")
+
+        # Path replacement
+        rules = [
+            gpn.RedactionRule(pattern="/Users/user", replacement="~"),
+            gpn.RedactionRule(pattern=r"secret_\d+", replacement="[SECRET]"),
+        ]
+        text = "Refactored /Users/user/project/main.py using key secret_98765"
+        sanitized = gpn.apply_redactions(text, rules=rules)
+        self.assertEqual(sanitized, "Refactored ~/project/main.py using key [SECRET]")
+
+        # Invalid regex pattern falls back gracefully to literal replacement
+        fallback_rules = [gpn.RedactionRule(pattern="unmatched[bracket", replacement="[FIXED]")]
+        res = gpn.apply_redactions("Text with unmatched[bracket here", rules=fallback_rules)
+        self.assertEqual(res, "Text with [FIXED] here")
+
+        # Replacement containing backslashes
+        win_rules = [gpn.RedactionRule(pattern="old_path", replacement=r"C:\safe\path")]
+        res_win = gpn.apply_redactions("Open old_path/file.txt", rules=win_rules)
+        self.assertEqual(res_win, r"Open C:\safe\path/file.txt")
+
+    def test_record_and_show_with_configured_redact(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+
+            # Create initial commit
+            (repo / "file.txt").write_text("hello\n")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo, check=True)
+
+            # Configure redactions
+            subprocess.run(["git", "config", "--add", "prompt-log.redact", "/Users/tester => ~"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "--add", "prompt-log.redact", r"token_[0-9]+ => [TOKEN]"], cwd=repo, check=True)
+
+            # Record manual prompt
+            script_path = Path(gpn.__file__).resolve()
+            rec_cmd = [
+                "python3", str(script_path), "record",
+                "-m", "Inspect /Users/tester/workspace with token_123456",
+            ]
+            res = subprocess.run(rec_cmd, cwd=repo, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, res.stderr)
+
+            # Check raw note on disk: must be sanitized
+            raw_note = gpn.get_note_content("HEAD", repo_root=repo)
+            self.assertIsNotNone(raw_note)
+            self.assertIn("Inspect ~/workspace with [TOKEN]", raw_note)
+            self.assertNotIn("/Users/tester", raw_note)
+            self.assertNotIn("token_123456", raw_note)
+
+            # Check show output
+            show_res = subprocess.run(["python3", str(script_path), "show", "HEAD"], cwd=repo, capture_output=True, text=True)
+            self.assertEqual(show_res.returncode, 0)
+            self.assertIn("Inspect ~/workspace with [TOKEN]", show_res.stdout)
+
+    def test_record_and_export_with_cli_redact_flag(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+
+            (repo / "file.txt").write_text("code\n")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "Feat commit"], cwd=repo, check=True)
+
+            script_path = Path(gpn.__file__).resolve()
+
+            # Record note with ad-hoc --redact flag
+            rec_cmd = [
+                "python3", str(script_path), "record",
+                "-m", "Sensitive query on internal-host.corp.net",
+                "--redact", "internal-host.corp.net => [INTERNAL_HOST]",
+            ]
+            subprocess.run(rec_cmd, cwd=repo, check=True, capture_output=True)
+
+            raw_note = gpn.get_note_content("HEAD", repo_root=repo)
+            self.assertIn("[INTERNAL_HOST]", raw_note)
+            self.assertNotIn("internal-host.corp.net", raw_note)
+
+            # Record another commit without redaction in the note
+            (repo / "file2.txt").write_text("more code\n")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "Second commit"], cwd=repo, check=True)
+            rec2_cmd = [
+                "python3", str(script_path), "record",
+                "-m", "Fixed issue in /private/path/file.py",
+            ]
+            subprocess.run(rec2_cmd, cwd=repo, check=True, capture_output=True)
+
+            # Export with --redact flag: verify export sanitizes both markdown and metadata
+            export_cmd = [
+                "python3", str(script_path), "export", "--stdout",
+                "--range", "HEAD~2..HEAD",
+                "--redact", "/private/path => ~",
+            ]
+            exp_res = subprocess.run(export_cmd, cwd=repo, capture_output=True, text=True)
+            self.assertEqual(exp_res.returncode, 0, exp_res.stderr)
+            self.assertIn("~/file.py", exp_res.stdout)
+            self.assertNotIn("in /private/path", exp_res.stdout)
+            # Verify embedded metadata JSON note is also sanitized
+            self.assertIn("git-prompt-log:metadata", exp_res.stdout)
+
+    def test_format_prompt_note_block_with_redactions(self):
+        raw_note = (
+            "Assistant-Session: test-sess-123\n"
+            "Assistant-Harness: Manual\n"
+            "Assistant-Model: Manual\n"
+            "Assistant-Recorded: 2026-09-04 10:00:00 UTC\n\n"
+            "Assistant-Prompts:\n"
+            "  [2026-09-04 10:00:00 UTC] Update /Users/john/repo/src.py with key secret_token_xyz"
+        )
+        rules = [
+            gpn.RedactionRule(pattern="/Users/john", replacement="~"),
+            gpn.RedactionRule(pattern="secret_token_[a-z]+", replacement="[TOKEN]"),
+        ]
+        formatted = gpn.format_prompt_note_block(raw_note, redact_rules=rules)
+        self.assertIn("Update ~/repo/src.py with key [TOKEN]", formatted)
+        self.assertNotIn("/Users/john", formatted)
+        self.assertNotIn("secret_token_xyz", formatted)
+
+    def test_session_list_with_redactions(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True)
+
+            # Setup mock brain transcript
+            brain_dir = repo / "brain"
+            session_id = "test-session-redact-456"
+            t_dir = brain_dir / session_id / ".system_generated" / "logs"
+            t_dir.mkdir(parents=True, exist_ok=True)
+            t_path = t_dir / "transcript.jsonl"
+            t_step = {
+                "type": "USER_INPUT",
+                "created_at": "2026-09-04T10:00:00Z",
+                "content": "Check /Users/developer/secret_project/code.py",
+            }
+            t_path.write_text(json.dumps(t_step) + "\n")
+
+            env = os.environ.copy()
+            env["ANTIGRAVITY_DATA_DIR"] = str(repo)
+            env["ANTIGRAVITY_CONVERSATION_ID"] = session_id
+
+            # Configure redactions
+            subprocess.run(["git", "config", "--add", "prompt-log.redact", "/Users/developer => ~"], cwd=repo, check=True)
+
+            script_path = Path(gpn.__file__).resolve()
+            sess_res = subprocess.run(
+                ["python3", str(script_path), "session", "--session", session_id],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+            self.assertEqual(sess_res.returncode, 0, sess_res.stderr)
+            self.assertIn("Check ~/secret_project/code.py", sess_res.stdout)
+            self.assertNotIn("/Users/developer", sess_res.stdout)
 
 
 class TestWorkflowAndAttributionLifecycle(unittest.TestCase):

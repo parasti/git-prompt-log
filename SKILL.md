@@ -254,6 +254,12 @@ When asked how to inspect, exclude, or retract specific prompts:
   * `git config --add prompt-log.exclude "<regex>"`: Permanently skip routine patterns across all recordings (overrides default patterns).
   * `git config prompt-log.defaultExcludes true`: Retain defaults alongside custom patterns.
   * `git config prompt-log.exclude ""` or `git config prompt-log.defaultExcludes false`: Disable all exclusions.
+* **Configurable Auto-Redaction (Sanitization via Git Config & CLI):**
+  * `git config --add prompt-log.redact "<pattern> => <replacement>"`: Replace matched patterns with placeholders (e.g. `"/Users/user => ~"`, `"/home/[^/]+ => ~"`).
+  * `git config --add prompt-log.redact "token-[a-z0-9]+ => [TOKEN]"`: Replace sensitive tokens with custom placeholders (or omit `=>` to default to `[REDACTED]`).
+  * `git config prompt-log.redact ""`: Clear all configured redaction rules.
+  * `git prompt-log record --redact "<rule>"` / `git prompt-log export --redact "<rule>"`: Pass ad-hoc redaction rules directly via the CLI.
+  * Redactions are applied automatically on record (sanitized in git notes on disk), on display (`log`, `show`, `session`), and on export (`export`).
 * **Per-Commit Drops & Edits (Single Commit Only):**
   * `git prompt-log record --drop "<pattern>"`: Exclude matching prompts for this commit note only.
   * `git prompt-log edit HEAD`: Edit a recorded note interactively in `$EDITOR`.
