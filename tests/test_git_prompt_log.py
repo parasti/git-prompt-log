@@ -590,6 +590,211 @@ class TestExportAndImportLog(unittest.TestCase):
         # Verify indicator appears after p3
         self.assertIn(f"> Third prompt that created commit 2\n\nCommits:\n- `{sha2[:8]}` feat: second commit", out)
 
+    def test_export_incremental_and_overwrite(self):
+        self._commit("base.txt", "base", "chore: initial base")
+        subprocess.run(["git", "checkout", "-b", "feature"], cwd=self.repo_dir, check=True)
+        sha1 = self._commit("file1.txt", "v1", "feat: step one")
+        p1 = gpn.PromptEntry("2026-09-04 01:00:00 UTC", "First prompt for step one")
+        note1 = gpn.SessionNote(
+            session_id="session-inc-ovw-1",
+            harness="Antigravity CLI 1.1.28",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:00:05 UTC",
+            prompts=[p1],
+        )
+        gpn.write_note_content(sha1, note1.format(), repo_root=self.repo_dir)
+
+        script_path = Path(gpn.__file__).resolve()
+
+        # 1. Initial export
+        res1 = subprocess.run(
+            ["python3", str(script_path), "export", "--commit", "--slug", "step_one", "--session", "session-inc-ovw-1"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res1.returncode, 0)
+        prompts_dir = self.repo_dir / "prompts"
+        files_after_1 = sorted(prompts_dir.glob("*_step_one.md"))
+        self.assertEqual(len(files_after_1), 1)
+        file1_path = files_after_1[0]
+        content1 = file1_path.read_text(encoding="utf-8")
+        self.assertIn("First prompt for step one", content1)
+        self.assertIn(f"- `{sha1[:8]}` feat: step one", content1)
+
+        # 2. Second commit with new prompt
+        sha2 = self._commit("file2.txt", "v2", "feat: step two")
+        p2 = gpn.PromptEntry("2026-09-04 01:10:00 UTC", "Second prompt for step two")
+        note2 = gpn.SessionNote(
+            session_id="session-inc-ovw-1",
+            harness="Antigravity CLI 1.1.28",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:10:05 UTC",
+            prompts=[p2, p1],
+        )
+        gpn.write_note_content(sha2, note2.format(), repo_root=self.repo_dir)
+
+        # 3. Export incremental
+        res2 = subprocess.run(
+            ["python3", str(script_path), "export", "--incremental", "--commit", "--slug", "step_two", "--session", "session-inc-ovw-1"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res2.returncode, 0)
+        files_after_2 = sorted(prompts_dir.glob("*_step_two.md"))
+        self.assertEqual(len(files_after_2), 1)
+        file2_path = files_after_2[0]
+        content2 = file2_path.read_text(encoding="utf-8")
+
+        # Incremental file must contain commit 2 and prompt 2, but NOT prompt 1 under Steering Prompts
+        self.assertIn(f"- `{sha2[:8]}` feat: step two", content2)
+        self.assertNotIn(f"- `{sha1[:8]}` feat: step one", content2)
+        self.assertIn("Second prompt for step two", content2)
+        self.assertNotIn("First prompt for step one", content2)
+        # Previous export commit must NOT be listed under ## Commits
+        self.assertNotIn("prompts: Export prompt log for step one", content2)
+
+        # 4. Incremental with no new commits
+        res_noop = subprocess.run(
+            ["python3", str(script_path), "export", "--incremental", "--session", "session-inc-ovw-1"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_noop.returncode, 0)
+        self.assertIn("No new commits found since previous export", res_noop.stdout)
+
+        # 5. Third commit and overwrite export
+        sha3 = self._commit("file3.txt", "v3", "feat: step three")
+        p3 = gpn.PromptEntry("2026-09-04 01:20:00 UTC", "Third prompt for step three")
+        note3 = gpn.SessionNote(
+            session_id="session-inc-ovw-1",
+            harness="Antigravity CLI 1.1.28",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:20:05 UTC",
+            prompts=[p3, p2, p1],
+        )
+        gpn.write_note_content(sha3, note3.format(), repo_root=self.repo_dir)
+
+        # Overwrite the first export file explicitly
+        res_ovw = subprocess.run(
+            ["python3", str(script_path), "export", "--overwrite", str(file1_path), "--commit"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res_ovw.returncode, 0)
+        self.assertIn("Updated prompt log", res_ovw.stdout)
+        self.assertIn("Committed prompt log: 'prompts: Update prompt log for step one'", res_ovw.stdout)
+
+        updated_content1 = file1_path.read_text(encoding="utf-8")
+        # Now updated_content1 must contain all 3 commits
+        self.assertIn(f"- `{sha1[:8]}` feat: step one", updated_content1)
+        self.assertIn(f"- `{sha2[:8]}` feat: step two", updated_content1)
+        self.assertIn(f"- `{sha3[:8]}` feat: step three", updated_content1)
+        self.assertIn("First prompt for step one", updated_content1)
+        self.assertIn("Second prompt for step two", updated_content1)
+        self.assertIn("Third prompt for step three", updated_content1)
+        # Meta export commits must NOT be in ## Commits
+        self.assertNotIn("prompts: Export", updated_content1)
+        self.assertNotIn("prompts: Update", updated_content1)
+
+    def test_export_incremental_and_overwrite_mutually_exclusive(self):
+        script_path = Path(gpn.__file__).resolve()
+        res = subprocess.run(
+            ["python3", str(script_path), "export", "--incremental", "--overwrite"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("mutually exclusive", res.stderr)
+
+    def test_export_overwrite_auto_detect_file(self):
+        self._commit("base.txt", "base", "chore: initial base")
+        subprocess.run(["git", "checkout", "-b", "feature"], cwd=self.repo_dir, check=True)
+        sha1 = self._commit("file1.txt", "v1", "feat: first feature step")
+        p1 = gpn.PromptEntry("2026-09-04 01:00:00 UTC", "First prompt for auto overwrite")
+        note1 = gpn.SessionNote(
+            session_id="session-auto-ovw",
+            harness="Antigravity CLI 1.1.28",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:00:05 UTC",
+            prompts=[p1],
+        )
+        gpn.write_note_content(sha1, note1.format(), repo_root=self.repo_dir)
+
+        script_path = Path(gpn.__file__).resolve()
+
+        # Initial export
+        res1 = subprocess.run(
+            ["python3", str(script_path), "export", "--commit", "--slug", "my_feature", "--session", "session-auto-ovw"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res1.returncode, 0)
+        prompts_dir = self.repo_dir / "prompts"
+        files1 = list(prompts_dir.glob("*.md"))
+        self.assertEqual(len(files1), 1)
+
+        # Second commit
+        sha2 = self._commit("file2.txt", "v2", "feat: second feature step")
+        p2 = gpn.PromptEntry("2026-09-04 01:15:00 UTC", "Second prompt for auto overwrite")
+        note2 = gpn.SessionNote(
+            session_id="session-auto-ovw",
+            harness="Antigravity CLI 1.1.28",
+            model="Gemini 3.8 Flash (High)",
+            recorded_at="2026-09-04 01:15:05 UTC",
+            prompts=[p2, p1],
+        )
+        gpn.write_note_content(sha2, note2.format(), repo_root=self.repo_dir)
+
+        # Overwrite without specifying file path
+        res2 = subprocess.run(
+            ["python3", str(script_path), "export", "--overwrite", "--commit", "--session", "session-auto-ovw"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res2.returncode, 0)
+        self.assertIn("Updated prompt log at", res2.stdout)
+        self.assertIn("Committed prompt log: 'prompts: Update prompt log for my feature'", res2.stdout)
+
+        # Still exactly one file in prompts/
+        files2 = list(prompts_dir.glob("*.md"))
+        self.assertEqual(len(files2), 1)
+        self.assertEqual(files1[0], files2[0])
+
+        updated_content = files2[0].read_text(encoding="utf-8")
+        self.assertIn(f"- `{sha1[:8]}` feat: first feature step", updated_content)
+        self.assertIn(f"- `{sha2[:8]}` feat: second feature step", updated_content)
+        self.assertIn("First prompt for auto overwrite", updated_content)
+        self.assertIn("Second prompt for auto overwrite", updated_content)
+
+    def test_post_commit_skips_export_commit(self):
+        self._commit("base.txt", "base", "chore: initial base")
+        script_path = Path(gpn.__file__).resolve()
+        # Initialize hooks
+        subprocess.run(["python3", str(script_path), "init"], cwd=self.repo_dir, check=True, capture_output=True)
+
+        # Create an export commit
+        out_file = self.repo_dir / "prompts" / "test_hook.md"
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_text("# Prompt Log\n", encoding="utf-8")
+        subprocess.run(["git", "add", str(out_file)], cwd=self.repo_dir, check=True)
+        res = subprocess.run(
+            ["git", "commit", "-m", "prompts: Export prompt log for hook test"],
+            cwd=self.repo_dir,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+        # Verify no note attached to HEAD
+        note = gpn.get_note_content("HEAD", repo_root=self.repo_dir)
+        self.assertIsNone(note)
+
     def test_import_legacy_metadata_format(self):
         sha = self._commit("file_legacy.txt", "legacy", "feat: Legacy Feature")
         # Legacy log format with <!-- git-prompt-note:metadata

@@ -3223,6 +3223,18 @@ def cmd_record(args: argparse.Namespace) -> int:
     return _record_single_commit(single_args, repo_root=repo_root)
 
 
+def is_export_commit(sha: str, repo_root: Path, subj: Optional[str] = None) -> bool:
+    """Checks whether a commit is a prompt log export/update commit or only touches prompts/."""
+    if subj and re.match(r"^prompts:\s*(?:Export|Update)\s+.*prompt\s+log", subj, re.IGNORECASE):
+        return True
+    code, out, _ = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", sha], repo_root=repo_root)
+    if code == 0 and out.strip():
+        files = [f.strip() for f in out.strip().splitlines() if f.strip()]
+        if files and all(f.startswith("prompts/") for f in files):
+            return True
+    return False
+
+
 def cmd_post_commit(args: argparse.Namespace) -> int:
     """
     Called by .git/hooks/post-commit if installed.
@@ -3230,6 +3242,10 @@ def cmd_post_commit(args: argparse.Namespace) -> int:
     """
     repo_root = get_repo_root()
     if is_rebase_in_progress(repo_root):
+        return 0
+
+    code, head_subj, _ = run_git(["log", "-n", "1", "--format=%s", "HEAD"], repo_root=repo_root)
+    if code == 0 and is_export_commit("HEAD", repo_root, head_subj):
         return 0
 
     # Strict causality guard: Only proceed if running within an explicit agent execution context
@@ -3881,10 +3897,84 @@ def get_export_command(args: argparse.Namespace) -> str:
         parts.append("--stdout")
     if getattr(args, "commit", False):
         parts.append("--commit")
+    if getattr(args, "overwrite", False):
+        if isinstance(args.overwrite, str) and args.overwrite not in ("True", "true"):
+            parts.extend(["--overwrite", args.overwrite])
+        else:
+            parts.append("--overwrite")
+    if getattr(args, "incremental", False):
+        parts.append("--incremental")
+    if getattr(args, "session", None):
+        parts.extend(["--session", args.session])
     if getattr(args, "redact", None):
         for r in args.redact:
             parts.extend(["--redact", r])
     return shlex.join(parts)
+
+
+def find_previous_exports(
+    repo_root: Path,
+    session_id: Optional[str] = None,
+    branch_range: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Finds existing prompt log exports on the branch and in the prompts/ directory."""
+    prompts_dir = repo_root / "prompts"
+    all_files: List[Path] = []
+    session_files: List[Path] = []
+    all_exported_commit_shas: Set[str] = set()
+    exported_prompt_timestamps: Set[Tuple[str, str]] = set()
+
+    if prompts_dir.is_dir():
+        for p in sorted(prompts_dir.glob("*.md")):
+            try:
+                content = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            all_files.append(p)
+            file_sessions = set()
+            meta_m = re.search(r"<!-- (?:git-prompt-log|git-prompt-note):metadata\s*(.*?)\s*-->", content, re.DOTALL)
+            if meta_m:
+                try:
+                    data = json.loads(meta_m.group(1))
+                    for c_entry in data.get("commits", []):
+                        chash = c_entry.get("hash")
+                        if chash:
+                            all_exported_commit_shas.add(chash)
+                        cnote = c_entry.get("note", "")
+                        for sn in parse_notes(cnote):
+                            file_sessions.add(sn.session_id)
+                            for pe in sn.prompts:
+                                exported_prompt_timestamps.add((sn.session_id, pe.timestamp))
+                except Exception:
+                    pass
+            for sm in re.finditer(r"-\s+\*\*Session:\*\*\s+`?([a-zA-Z0-9_-]+)`?", content):
+                file_sessions.add(sm.group(1))
+
+            if session_id and session_id in file_sessions:
+                session_files.append(p)
+
+    last_export_commit = None
+    last_export_subject = None
+    if branch_range:
+        code, out, _ = run_git(["log", "--format=%H %s", branch_range], repo_root=repo_root)
+        if code == 0 and out.strip():
+            for line in out.strip().splitlines():
+                parts = line.split(" ", 1)
+                sha = parts[0].strip()
+                subj = parts[1].strip() if len(parts) > 1 else ""
+                if is_export_commit(sha, repo_root, subj):
+                    last_export_commit = sha
+                    last_export_subject = subj
+                    break
+
+    return {
+        "all_prompt_files": all_files,
+        "session_files": session_files,
+        "all_exported_commit_shas": all_exported_commit_shas,
+        "exported_prompt_timestamps": exported_prompt_timestamps,
+        "last_export_commit": last_export_commit,
+        "last_export_subject": last_export_subject,
+    }
 
 
 def cmd_export_log(args: argparse.Namespace) -> int:
@@ -3894,16 +3984,59 @@ def cmd_export_log(args: argparse.Namespace) -> int:
     """
     repo_root = get_repo_root()
     ref = args.ref
-    commit_range = args.range or get_default_branch_range(repo_root)
+    is_incremental = getattr(args, "incremental", False)
+    is_overwrite = bool(getattr(args, "overwrite", False))
+
+    if is_incremental and is_overwrite:
+        sys.stderr.write("Error: --incremental and --overwrite are mutually exclusive.\n")
+        return 1
+
+    active_adapter = REGISTRY.detect_active_adapter(repo_root=repo_root)
+    active_session_id = getattr(args, "session", None)
+    if not active_session_id and active_adapter:
+        active_session_id = active_adapter.detect_session_id(repo_root=repo_root)
+
+    default_branch_range = get_default_branch_range(repo_root)
+    prev_exports = find_previous_exports(
+        repo_root=repo_root,
+        session_id=active_session_id,
+        branch_range=args.range or default_branch_range,
+    )
+
+    if is_incremental:
+        if not args.range:
+            if prev_exports.get("last_export_commit"):
+                commit_range = f"{prev_exports['last_export_commit']}..HEAD"
+            else:
+                commit_range = default_branch_range
+        else:
+            commit_range = args.range
+    else:
+        commit_range = args.range or default_branch_range
 
     # Resolve commits in range in chronological order
     code, out, err = run_git(["rev-list", "--reverse", commit_range], repo_root=repo_root)
     if code != 0 or not out.strip():
+        if is_incremental:
+            print(f"No new commits found since previous export in range '{commit_range}'. Nothing to export.")
+            return 0
         # Fallback to single HEAD commit if range rev-list was empty
         code, head_sha, _ = run_git(["rev-parse", "HEAD"], repo_root=repo_root)
-        commit_shas = [head_sha] if code == 0 and head_sha else []
+        raw_shas = [head_sha] if code == 0 and head_sha else []
     else:
-        commit_shas = [line.strip() for line in out.strip().splitlines() if line.strip()]
+        raw_shas = [line.strip() for line in out.strip().splitlines() if line.strip()]
+
+    # Filter out prompt export commits from commit listing
+    commit_shas: List[Tuple[str, str]] = []
+    for sha in raw_shas:
+        c_code, c_subj, _ = run_git(["log", "-n", "1", "--format=%s", sha], repo_root=repo_root)
+        if is_export_commit(sha, repo_root, c_subj):
+            continue
+        commit_shas.append((sha, c_subj or ""))
+
+    if is_incremental and not commit_shas:
+        print(f"No new commits found since previous export in range '{commit_range}'. Nothing to export.")
+        return 0
 
     if not commit_shas:
         sys.stderr.write(f"Error: No commits found in range '{commit_range}'.\n")
@@ -3915,8 +4048,7 @@ def cmd_export_log(args: argparse.Namespace) -> int:
 
     commit_entries = []
     all_session_notes = []
-    for sha in commit_shas:
-        c_code, c_subj, _ = run_git(["log", "-n", "1", "--format=%s", sha], repo_root=repo_root)
+    for sha, c_subj in commit_shas:
         raw = get_note_content(sha, ref=ref, repo_root=repo_root)
         notes = parse_notes(raw) if raw else []
         filtered_notes = []
@@ -3931,6 +4063,12 @@ def cmd_export_log(args: argparse.Namespace) -> int:
             kept = apply_session_excludes_filter(root_sid, n.prompts, repo_root=repo_root)
             if root_sid != n.session_id:
                 kept = apply_session_excludes_filter(n.session_id, kept, repo_root=repo_root)
+            if is_incremental and prev_exports.get("exported_prompt_timestamps"):
+                kept = [
+                    p for p in kept
+                    if (root_sid, p.timestamp) not in prev_exports["exported_prompt_timestamps"]
+                    and (n.session_id, p.timestamp) not in prev_exports["exported_prompt_timestamps"]
+                ]
             if kept:
                 if active_redacts:
                     kept = [
@@ -3960,7 +4098,6 @@ def cmd_export_log(args: argparse.Namespace) -> int:
         return 1
 
     merged_sessions = merge_session_notes(all_session_notes)
-    slug = args.slug or get_default_slug(repo_root)
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     ts_file = now_utc.strftime("%Y_%m_%d_%H%M%S")
     ts_human = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -3969,7 +4106,52 @@ def cmd_export_log(args: argparse.Namespace) -> int:
     if getattr(args, "stdout", False):
         out_path = None
         import_cmd = "git prompt-log import <file>"
+        slug = args.slug or get_default_slug(repo_root)
+    elif is_overwrite:
+        overwrite_arg = getattr(args, "overwrite", None)
+        if isinstance(overwrite_arg, str) and overwrite_arg.strip() and overwrite_arg.strip() not in ("True", "true"):
+            out_path = Path(overwrite_arg.strip())
+            if not out_path.is_absolute():
+                out_path = repo_root / out_path
+        elif args.output:
+            out_path = Path(args.output)
+            if not out_path.is_absolute():
+                out_path = repo_root / out_path
+        else:
+            if prev_exports.get("session_files"):
+                out_path = prev_exports["session_files"][-1]
+            elif prev_exports.get("last_export_commit"):
+                last_sha = prev_exports["last_export_commit"]
+                code, out, _ = run_git(["diff-tree", "--no-commit-id", "--name-only", "-r", last_sha], repo_root=repo_root)
+                md_files = [f.strip() for f in out.strip().splitlines() if f.strip().startswith("prompts/") and f.strip().endswith(".md")]
+                if md_files:
+                    out_path = repo_root / md_files[0]
+            elif len(prev_exports.get("all_prompt_files", [])) == 1:
+                out_path = prev_exports["all_prompt_files"][0]
+            else:
+                out_path = None
+
+        if not out_path or not out_path.exists():
+            sys.stderr.write("Error: No existing prompt log export found to overwrite. Specify a file path or omit --overwrite to create a new export.\n")
+            return 1
+
+        resolved_out = out_path.resolve()
+        resolved_repo = repo_root.resolve()
+        if resolved_out.is_relative_to(resolved_repo):
+            rel_path = resolved_out.relative_to(resolved_repo)
+        else:
+            rel_path = out_path
+        import_cmd = f"git prompt-log import {rel_path}"
+
+        slug = args.slug
+        if not slug and out_path:
+            m = re.match(r"^\d{4}_\d{2}_\d{2}_\d{6}_(.*)$", out_path.stem)
+            if m:
+                slug = m.group(1)
+        if not slug:
+            slug = get_default_slug(repo_root)
     else:
+        slug = args.slug or get_default_slug(repo_root)
         if args.output:
             out_path = Path(args.output)
             if not out_path.is_absolute():
@@ -4081,11 +4263,19 @@ def cmd_export_log(args: argparse.Namespace) -> int:
     assert out_path is not None
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(md_content, encoding="utf-8")
-    print(f"Exported prompt log to {rel_path}")
+    if is_overwrite:
+        print(f"Updated prompt log at {rel_path}")
+    else:
+        print(f"Exported prompt log to {rel_path}")
 
     if getattr(args, "commit", False):
         run_git(["add", str(out_path)], repo_root=repo_root)
-        commit_msg = f"prompts: Export prompt log for {slug.replace('_', ' ')}"
+        if is_overwrite:
+            commit_msg = f"prompts: Update prompt log for {slug.replace('_', ' ')}"
+        elif is_incremental:
+            commit_msg = f"prompts: Export incremental prompt log for {slug.replace('_', ' ')}"
+        else:
+            commit_msg = f"prompts: Export prompt log for {slug.replace('_', ' ')}"
         c_code, _, c_err = run_git(["commit", "-m", commit_msg], repo_root=repo_root)
         if c_code == 0:
             print(f"Committed prompt log: '{commit_msg}'")
@@ -5197,6 +5387,25 @@ def main():
     p_export.add_argument("--slug", help="Custom slug name for the exported log")
     p_export.add_argument("--commit", action="store_true", help="Stage and commit the exported markdown log file")
     p_export.add_argument("--stdout", action="store_true", help="Print log to stdout instead of writing to a file")
+    p_export.add_argument(
+        "--overwrite",
+        "-w",
+        nargs="?",
+        const=True,
+        default=False,
+        help="Overwrite an existing prompt log export file (auto-detects previous export for session/branch if path omitted)",
+    )
+    p_export.add_argument(
+        "--incremental",
+        "-i",
+        action="store_true",
+        help="Export only commits and prompts since the last prompt log export on this branch",
+    )
+    p_export.add_argument(
+        "--session",
+        "-s",
+        help="Target a specific agent session ID for export resolution and overwrite detection",
+    )
     p_export.add_argument(
         "--redact",
         action="append",
