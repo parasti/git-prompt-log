@@ -29,7 +29,7 @@ When answering questions about the tool, use this technical foundation:
 
 ## 2. Executing Tasks on Request
 
-### Export Prompt Notes for Pull Requests (Zero-Inspection 1-Command Flow)
+### Export Prompt Notes for Pull Requests (Fast Check & Export Flow)
 
 When asked to export and commit a prompt log on a feature branch:
 
@@ -38,17 +38,45 @@ When asked to export and commit a prompt log on a feature branch:
    * **Do NOT run `git branch`, `git status`, or `git log` to inspect branch names or commit messages for naming.** Formulate the slug directly from context.
    * **Do NOT ask the human to name the slug.** Naming is hard for humans; you are best positioned to summarize the work you just performed.
 
-2. **Execute immediately in a single terminal command:**
+2. **Check for existing export in active session (Fast 1-command check):**
    ```bash
-   git prompt-log export --commit --slug "<context_derived_slug>"
+   [ -d prompts ] && grep -l "<current_session_id>" prompts/*.md 2>/dev/null || true
    ```
+   *(Retrieve `<current_session_id>` directly from your session context, e.g. active conversation ID).*
 
-3. **Invariants (Do NOT waste turns probing):**
-   * **Do NOT run `git status` or `git branch` beforehand:** The feature branch revision range (`@{u}..HEAD`, `origin/main..HEAD`, or `origin/master..HEAD`) is detected automatically by the tool.
-   * **Do NOT inspect `git notes` or run `git prompt-log show`:** Commits created by the assistant automatically have prompt notes attached via the post-commit hook. The tool automatically validates notes.
-   * **Do NOT run `export --help` or `--stdout`:** `--commit` is safe, atomic, and idempotent. It creates `prompts/` automatically if missing, stages *only* the new markdown log, and leaves all other working tree files untouched.
-   * **Do NOT run `git log` or `git status` afterwards:** `export --commit` outputs explicit confirmation upon completion (`Committed prompt log: '...'`).
-   * Report completion immediately after this single command succeeds.
+3. **Execute export based on check result:**
+   * **Case A: No matching prompt file found (first export in this session):**
+     Execute export immediately in a single command:
+     ```bash
+     git prompt-log export --commit --slug "<context_derived_slug>"
+     ```
+   * **Case B: Matching prompt file found (e.g. `prompts/2026_..._slug.md`):**
+     * **If the user explicitly asked to "update" or "overwrite" the prompt log:**
+       ```bash
+       git prompt-log export --overwrite --commit
+       ```
+     * **If the user explicitly asked for "incremental" or "since last export":**
+       ```bash
+       git prompt-log export --incremental --commit --slug "<context_derived_slug>"
+       ```
+     * **If user's intent is unspecified (e.g. simply asked to export again):**
+       Engage **Ask Mode** via the `ask_question` tool:
+       - Question: `"A prompt log export from earlier in this session already exists (prompts/<matched_filename>.md). How would you like to handle this export?"`
+       - Options:
+         1. `(Recommended) Overwrite existing export (updates prompts/<matched_filename>.md to cover the full session for this PR)`
+         2. `Export incremental prompt log (creates a new prompt log for only commits since the previous export)`
+         3. `Create a new full export alongside existing`
+       - Execute the command corresponding to the user's choice:
+         - Overwrite: `git prompt-log export --overwrite --commit`
+         - Incremental: `git prompt-log export --incremental --commit --slug "<context_derived_slug>"`
+         - New: `git prompt-log export --commit --slug "<context_derived_slug>"`
+
+4. **Invariants (Do NOT waste turns probing):**
+   * **The fast grep above is the ONLY inspection command permitted:** Do NOT run `git status`, `git branch`, `git log`, or `git notes` beforehand. The feature branch revision range is detected automatically by the tool.
+   * **Strict command count budget:** At most 2 commands total (1 grep check, then 1 export command).
+   * **Do NOT run `export --help` or `--stdout`:** `--commit` is safe, atomic, and idempotent. It stages *only* the new or updated markdown log, and leaves all other working tree files untouched.
+   * **Do NOT run `git log` or `git status` afterwards:** `export --commit` outputs explicit confirmation upon completion.
+   * Report completion immediately after the export command succeeds.
 
 ---
 

@@ -122,6 +122,15 @@ Git notes are not pushed or fetched by default during standard `git push` or Git
    ```
    This writes `prompts/YYYY_MM_DD_HHMMSS_<slug>.md` and commits it to your branch, giving reviewers full visibility into your prompt history alongside code diffs.
 
+   * **Overwrite / Update Existing Export:** If you exported earlier in the session and want to update the log file in-place with cumulative PR work:
+     ```bash
+     git prompt-log export --overwrite --commit
+     ```
+   * **Incremental Export:** If you want a separate, non-overlapping prompt log covering only commits made since the previous export:
+     ```bash
+     git prompt-log export --incremental --commit --slug "<slug>"
+     ```
+
 2. **Re-hydrate on Merge (Maintainer):** When the PR merges into `main` (even if squashed or rebased via GitHub's web UI), restore the notes on `main`:
    ```bash
    # Re-hydrate prompt logs (e.g. via shell glob):
